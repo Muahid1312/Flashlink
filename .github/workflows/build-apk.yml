@@ -114,7 +114,9 @@ jobs:
                   continue
               log = Path(os.environ['RUNNER_TEMP']) / f'flashlink-{name}.log'
               detail = log.read_text(errors='replace')[-16000:] if log.is_file() else 'Open this step in the signed-in job log for details.'
-              message = f'Step {name} failed.\n{detail}'
-              message = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-              print(f'::error title=FlashLink build failure::{message}')
+              chunks = [detail[i:i + 3000] for i in range(0, len(detail), 3000)]
+              for index, chunk in enumerate(chunks, 1):
+                  message = f'Step {name} failed ({index}/{len(chunks)}).\n{chunk}'
+                  message = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print(f'::error title=FlashLink {name} diagnostic {index}::{message}')
           PY

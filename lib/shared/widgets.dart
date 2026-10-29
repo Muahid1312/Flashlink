@@ -26,12 +26,11 @@ class Panel extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
   @override
-  Widget build(BuildContext context) => Container(
-    padding: padding,
-    decoration: BoxDecoration(color: Theme.of(context).colorScheme.surface,
-      borderRadius: BorderRadius.circular(24),
-      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.65))),
-    child: child,
+  Widget build(BuildContext context) => Material(
+    color: Theme.of(context).colorScheme.surface,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24),
+      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.65))),
+    child: Padding(padding: padding, child: child),
   );
 }
 
