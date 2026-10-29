@@ -45,9 +45,22 @@ jobs:
           flutter-version: '3.47.8'
           channel: stable
 
-      - name: Set up Android SDK
+      - name: Configure the runner Android SDK
         id: android
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        run: |
+          python3 - <<'PY' 2>&1 | tee "$RUNNER_TEMP/flashlink-android.log"
+          import os, subprocess
+          from pathlib import Path
+          sdk = Path(os.environ.get('ANDROID_HOME') or os.environ['ANDROID_SDK_ROOT'])
+          manager = sdk / 'cmdline-tools/latest/bin/sdkmanager'
+          if not manager.is_file():
+              raise SystemExit('The runner Android SDK is missing sdkmanager.')
+          with open(os.environ['GITHUB_PATH'], 'a') as paths:
+              paths.write(f'{manager.parent}\n{sdk / "platform-tools"}\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'ANDROID_HOME={sdk}\nANDROID_SDK_ROOT={sdk}\n')
+          subprocess.run([str(manager), '--licenses'], input='y\n' * 100, text=True, check=True)
+          PY
 
       - name: Install required Android components
         id: components
@@ -65,11 +78,6 @@ jobs:
         id: flutter_tests
         run: flutter test --reporter expanded 2>&1 | tee "$RUNNER_TEMP/flashlink-flutter_tests.log"
 
-      - name: Run native ledger and protocol tests
-        id: native_tests
-        working-directory: android
-        run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 --console=plain 2>&1 | tee "$RUNNER_TEMP/flashlink-native_tests.log"
-
       - name: Build and verify debug APK
         id: apk
         run: ./tool/build_apk.sh debug 2>&1 | tee "$RUNNER_TEMP/flashlink-apk.log"
@@ -77,6 +85,12 @@ jobs:
       - name: Check APK artifact
         id: verify
         run: test -s build/artifacts/flashlink-debug.apk
+
+      # Flutter's build creates ignored Android local.properties for this runner.
+      - name: Run native ledger and protocol tests
+        id: native_tests
+        working-directory: android
+        run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 --console=plain 2>&1 | tee "$RUNNER_TEMP/flashlink-native_tests.log"
 
       - name: Upload installable debug APK
         id: upload
