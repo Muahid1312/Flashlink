@@ -17,6 +17,9 @@ jobs:
     name: Test and build debug APK
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
     env:
       CI: 'true'
       FLUTTER_SUPPRESS_ANALYTICS: 'true'
