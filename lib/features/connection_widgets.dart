@@ -16,12 +16,14 @@ class ConnectionPanel extends ConsumerWidget {
     final state = ref.watch(wifiProvider);
     final localMode = ref.watch(effectiveConnectionMethodProvider) == ConnectionMethod.localWifi;
     final local = ref.watch(localProvider);
-    if (localMode) return Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    if (localMode) {
+      return Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       StatusPill(label: local.label, icon: Icons.router_outlined),
       const SizedBox(height: 12),
       const Text('Connect through Local Wi-Fi / hotspot in Nearby. Compare both fingerprints, use a fresh invitation and confirm the incoming connection.'),
       TextButton(onPressed: () => context.go('/nearby'), child: const Text('Manage nearby devices →')),
-    ]));
+      ]));
+    }
     return Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       StatusPill(label: state.label, icon: state.connected ? Icons.link_rounded : Icons.link_off_rounded),
       const SizedBox(height: 12),

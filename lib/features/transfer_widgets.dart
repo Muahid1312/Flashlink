@@ -82,6 +82,7 @@ class TransferScreen extends ConsumerWidget {
         if(state.data['message'] != null) Text(state.data['message'].toString()),
       ])),
       const SizedBox(height:24),
+      if (state.phase == TransferPhase.connectionApproval) const IncomingConnectionPanel(),
       if(state.active) FilledButton.icon(onPressed:() => ref.read(transferProvider.notifier).command('cancel'),icon:const Icon(Icons.close_rounded),label:const Text('Cancel transfer')),
       if(const [TransferPhase.transferring,TransferPhase.verifying].contains(state.phase)) OutlinedButton(onPressed:() => ref.read(transferProvider.notifier).command('pause'),child:const Text('Pause at checkpoint')),
       if(const [TransferPhase.paused,TransferPhase.interrupted,TransferPhase.failed].contains(state.phase)) TextButton(onPressed:() => context.go('/history'),child:const Text('Open saved transfers to resume')),
