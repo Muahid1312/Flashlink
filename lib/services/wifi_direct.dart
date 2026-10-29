@@ -92,8 +92,10 @@ class WifiController extends Notifier<WifiSnapshot> {
     if (!_closed && next.revision >= state.revision) state = next;
   }
   void _error(String message) {
-    if (!_closed) state = WifiSnapshot(phase: WifiPhase.failed, revision: state.revision,
-      peers: state.peers, message: message, permissionGranted: state.permissionGranted);
+    if (!_closed) {
+      state = WifiSnapshot(phase: WifiPhase.failed, revision: state.revision,
+        peers: state.peers, message: message, permissionGranted: state.permissionGranted);
+    }
   }
   Future<void> refresh() async {
     try { _accept(await ref.read(wifiPlatformProvider).snapshot()); }
