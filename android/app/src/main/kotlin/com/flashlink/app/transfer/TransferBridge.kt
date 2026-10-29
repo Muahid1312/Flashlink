@@ -42,6 +42,7 @@ class TransferBridge(private val activity: Activity, messenger: BinaryMessenger,
                     "openSession", "reconnect" -> {
                         runtime.open(wifi(),call.argument<String>("name") ?: "My FlashLink",call.argument<Int>("bufferSize") ?: 262144,call.method == "reconnect"); result.success(null)
                     }
+                    "confirmConnection" -> { runtime.confirmConnection(call.argument<String>("id") ?: "",call.argument<Boolean>("accept") == true); result.success(null) }
                     "send" -> { runtime.send((call.argument<List<Map<String,Any?>>>("files") ?: error("Select files")).map { it["uri"] as String }); result.success(null) }
                     "accept", "reject" -> { runtime.approve(call.argument<String>("id") ?: "",call.method == "accept"); result.success(null) }
                     "pause" -> { runtime.pause(); result.success(null) }
@@ -77,7 +78,7 @@ class TransferBridge(private val activity: Activity, messenger: BinaryMessenger,
         return true
     }
     fun connectionChanged(state: Map<String,Any?>) {
-        if(state["phase"] != "connected" && runtime.latest["ready"] == true) runtime.interrupt("Wi-Fi Direct changed. Reconnect and resume from the verified checkpoint.")
+        if(runtime.connectionMethod == "wifiDirect" && state["connectionObserved"] == true && state["phase"] != "connected" && runtime.connectionBusy) runtime.interrupt("Wi-Fi Direct changed. Reconnect and resume from the verified checkpoint.")
     }
     fun resume() { runtime.foreground = true }
     fun suspend() { runtime.foreground = false } // Foreground service retains ownership; no Activity reference is retained.

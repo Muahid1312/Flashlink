@@ -6,6 +6,8 @@ import '../services/transfer.dart';
 import '../services/wifi_direct.dart';
 import '../shared/widgets.dart';
 import 'pairing_widget.dart';
+import 'connection_widgets.dart';
+import '../services/connection.dart';
 
 class TransferControls extends ConsumerWidget {
   const TransferControls({super.key,this.receiving = false});
@@ -15,6 +17,7 @@ class TransferControls extends ConsumerWidget {
     final transfer = ref.watch(transferProvider);
     final controller = ref.read(transferProvider.notifier);
     final wifi = ref.watch(wifiProvider);
+    final localMode = ref.watch(effectiveConnectionMethodProvider) == ConnectionMethod.localWifi;
     return Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch,children: [
       StatusPill(label:transfer.label),
       if(transfer.secure) const StatusPill(label:'Authenticated · TLS',icon:Icons.verified_user_outlined),
@@ -25,9 +28,11 @@ class TransferControls extends ConsumerWidget {
         TextButton(onPressed:transfer.active || transfer.ready ? null : () => controller.command('chooseDestination'),child:const Text('Choose destination folder')),
       ],
       if(!transfer.ready && !transfer.active) const Padding(padding:EdgeInsets.symmetric(vertical:16),child:PairingPanel()),
-      if(!transfer.ready) FilledButton(onPressed:!wifi.connected || transfer.active || (receiving && !transfer.destinationChosen) ? null : controller.openSession,
+      if (transfer.phase == TransferPhase.connectionApproval) const IncomingConnectionPanel(),
+      if (localMode && !transfer.ready && !transfer.active) TextButton(onPressed: () => context.go('/nearby'), child: const Text('Open Local Wi-Fi / hotspot pairing')),
+      if(!localMode && !transfer.ready) FilledButton(onPressed:!wifi.connected || transfer.active || (receiving && !transfer.destinationChosen) ? null : controller.openSession,
         child:Text(wifi.group?['isGroupOwner'] == true ? 'Open TCP listener' : 'Connect TCP session')),
-      if(!transfer.ready && !transfer.active && wifi.connected) TextButton(onPressed:controller.reconnect,child:const Text('Retry secure connection · up to 3 attempts')),
+      if(!localMode && !transfer.ready && !transfer.active && wifi.connected) TextButton(onPressed:controller.reconnect,child:const Text('Retry secure connection · up to 3 attempts')),
       if(transfer.incoming) ...[
         Text('Authenticated peer: ${transfer.data['peer'] ?? 'Connected device'}',style:Theme.of(context).textTheme.titleMedium),
         Text('${transfer.count} files · ${formatBytes(transfer.total)}'),
@@ -80,6 +85,7 @@ class TransferScreen extends ConsumerWidget {
       if(state.active) FilledButton.icon(onPressed:() => ref.read(transferProvider.notifier).command('cancel'),icon:const Icon(Icons.close_rounded),label:const Text('Cancel transfer')),
       if(const [TransferPhase.transferring,TransferPhase.verifying].contains(state.phase)) OutlinedButton(onPressed:() => ref.read(transferProvider.notifier).command('pause'),child:const Text('Pause at checkpoint')),
       if(const [TransferPhase.paused,TransferPhase.interrupted,TransferPhase.failed].contains(state.phase)) TextButton(onPressed:() => context.go('/history'),child:const Text('Open saved transfers to resume')),
+      Text('Method: ${state.data['connectionMethod'] == 'localWifi' ? 'Local Wi-Fi / hotspot' : 'Wi-Fi Direct'}'),
       if(state.secure) const StatusPill(label:'Authenticated · TLS',icon:Icons.verified_user_outlined),
       const PhaseNotice(message:'Progress counts real streamed bytes. Interrupted/paused data stays private at durable checkpoints; Cancel removes partial data. Completion requires SHA-256 verification and receiver acknowledgement. Resume requires the same authenticated peer and approved manifest.'),
     ])));

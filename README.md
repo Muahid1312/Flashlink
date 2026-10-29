@@ -10,7 +10,7 @@ Copy the extracted APK to each phone and open it with a file manager, allowing i
 
 For a source ZIP, use **Code → Download ZIP** on GitHub. Local source-only archives can also be made with `git archive --format=zip --prefix=FlashLink/ HEAD -o ../FlashLink-source.zip`; only committed files are included, so ignored local settings, build caches and signing keys are excluded.
 
-Offline Android file sharing over Wi-Fi Direct. The engine includes mutually authenticated TLS, private staged files, durable checkpoints, pause/resume and foreground-service ownership. No cloud, accounts, Bluetooth transfer or internet relay.
+Offline Android file sharing over Wi-Fi Direct or an existing local Wi-Fi / manually enabled phone hotspot. The engine includes mutually authenticated TLS, private staged files, durable checkpoints, pause/resume and foreground-service ownership. No cloud, accounts, Bluetooth transfer or internet relay.
 
 ## Development
 
@@ -34,6 +34,25 @@ For standalone JVM integration tests, install a Kotlin compiler/runtime and JDK:
 ```
 
 `KOTLINC` and `KOTLIN` can select compiler/runtime launchers. Tests execute production framing, checkpoint validation and TLS code over actual loopback sockets and private files. Generated test certificates are temporary fixtures, not application identities. Host measurements are not Android storage or Wi-Fi Direct benchmarks. Flutter controller tests mock platform interfaces; SQLite repository tests use a real FFI database. Android Keystore, SAF, service lifecycle and SQLite interoperability still require Android tests.
+
+## Connection modes and diagnosis
+
+In Nearby choose **Wi-Fi Direct** or **Local Wi-Fi / hotspot**. Method selection is locked while a session, pairing confirmation or transfer is active. Availability recommendations use actual network interfaces and make no speed ranking. Both modes retain pinned mutual TLS, binary framing, bounded streaming, checkpoints and file approvals. The default buffer is 256 KiB; the native opening APIs accept 64 KiB, 256 KiB or 1 MiB, without a rate cap.
+
+Wi-Fi Direct failures now show the operation, Android reason (`ERROR=0`, `P2P_UNSUPPORTED=1`, `BUSY=2`) and attempt. `adb logcat -s FlashLinkP2P FlashLinkConnection` shows native diagnostics without file contents or keys. The previous generic message discarded these details; it did not identify a hardware root cause. Connecting now waits for discovery-stop acknowledgement; BUSY retries stop after three attempts, generic ERROR retries once, and unsupported/permission failures do not loop. Discovery is bounded to 30 seconds, negotiation to 35 seconds and channel recovery to two attempts. Android 13+ requests Nearby devices; older versions require precise location and Location services, with coarse/fine requested together on Android 12. Device-specific radio/OEM causes require logs from the affected phones.
+
+For local mode:
+
+1. Join both phones to the same Wi-Fi, or manually enable one phone's hotspot in Android settings and join it from the other phone. No internet is needed. FlashLink does not create or silently switch networks.
+2. Compare the full certificate fingerprints on both phones and approve each other using the identity panel. The Android Keystore certificate is the stable local identity; advertised names are not identity proof.
+3. Choose the correct observed local listening address, then **Host a local connection** on one phone. Only a successfully bound listener is announced through DNS-SD (`_flashlink._tcp.`).
+4. On the other phone search local listeners, or scan the host's QR with a trusted external reader and paste its invitation. Manual IP/port, session ID and fingerprint entry is also supported. Compare the full fingerprint before confirming. No camera permission is requested.
+5. The listener displays the authenticated incoming peer and requires explicit acceptance within 40 seconds. A session invitation expires after two minutes, is single-use, and cannot be reused after acceptance/rejection. A certificate fingerprint QR is public stable identity information; the separate connection QR is expiring rendezvous information.
+6. Only after mutual TLS, connection admission and the bidirectional application handshake succeed does the secure/connected status appear. Use Send/Receive for the existing separately approved file flow. After a disconnect, create a new invitation and reconnect to the same approved peer before resuming saved transfers.
+
+Local sockets use observed private IPv4 Wi-Fi/hotspot subnets, bind to the chosen Android Wi-Fi Network/source interface, and have no cellular/internet relay fallback. IPv6-only local networks are not yet supported. Hotspot AP interfaces without a ConnectivityManager Network are bound by their observed local address. Some OEMs use unrecognized interface names, block multicast or isolate clients: QR/manual pairing avoids multicast dependency, but cannot bypass client isolation. Network loss, TLS/authentication errors, expiry and rejection are surfaced. Update both phones: the new connection admission handshake precedes the unchanged file protocol and is incompatible with older APKs.
+
+Two-phone verification remains **PENDING**: permission denial/regrant on Android 12 and 13+, P2P ERROR/BUSY recovery, both group roles, Wi-Fi without internet, hotspot-owner/client roles, multicast blocked/manual fallback, wrong fingerprints, rejection/timeout, expired/replayed invitation, network loss/reconnect, backgrounding/activity recreation, and real verified files in both directions. Host socket/SQLite/Robolectric tests do not prove Android radio or OEM behavior.
 
 ## Pair and connect
 
@@ -88,7 +107,7 @@ One batch is active at a time; duplicate starts/resumes are rejected. There is n
 No phones are attached to the coding environment. JVM TLS tests do not validate Android Keystore/Conscrypt compatibility, notifications, SAF providers, SQLite ownership or OEM power policy. A successful Android APK build and these checks remain release prerequisites:
 
 1. Install on two phones; include API 24–32 and API 33+ coverage. Connect P2P and confirm the real group-owner role/address.
-2. Compare/approve full fingerprints on both; test a deliberately wrong fingerprint and confirm no secure badge or file acceptance. Restore the intended approvals.
+2. Compare/approve full fingerprints on both and accept the incoming authenticated connection on the listener phone; test a deliberately wrong fingerprint and confirm no secure badge or file acceptance. Restore the intended approvals.
 3. Transfer a known 100 MB file, then a 1 GB file where space permits; record actual average speed in both directions. Transfer multiple files with duplicate names and an empty file; independently compare SHA-256. Then pause near 40% from each side. Verify durable nonzero offsets, reopen authenticated sessions and resume; independently compare final SHA-256.
 4. Disconnect Wi-Fi mid-transfer. Reconnect manually, authenticate and resume without restarting at zero.
 5. Recreate the activity, background/screen-lock during transfer, use notification Pause/Cancel, and force-stop/relaunch. Verify truthful Interrupted state and validated recovery; do not assume an OEM kept the process alive.

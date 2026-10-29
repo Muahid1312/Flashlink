@@ -4,6 +4,8 @@ import android.app.*
 import android.content.*
 import android.content.pm.ServiceInfo
 import android.net.Uri
+import android.net.Network
+import com.flashlink.app.connection.LocalRoute
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.*
 import android.provider.OpenableColumns
@@ -41,9 +43,22 @@ class TransferRuntime private constructor(private val context: Context) {
     private var owner = false
     private var bufferSize = 262144
     private var offerTicks = ArrayDeque<Long>()
+    @Volatile var connectionMethod = "wifiDirect"
+        private set
+    @Volatile var connectionNetwork: Network? = null
+        private set
+    @Volatile var invitation: ConnectionInvitation? = null
+        private set
+    @Volatile private var lease: InvitationLease? = null
+    @Volatile private var decision: CompletableFuture<Boolean>? = null
+    @Volatile private var rawConnecting: Socket? = null
+    private var port = Protocol.PORT
+    private var route: LocalRoute? = null
+    val connectionBusy: Boolean get() = session != null || latest["status"] in ACTIVE
+
     init { work.execute { ledger.writableDatabase; ledger.releaseUnused(context.contentResolver.persistedUriPermissions.map { it.uri.toString() }) } }
     fun update(value: Map<String,Any?>) {
-        latest = value + mapOf("destinationChosen" to (destination != null),
+        latest = value + mapOf("connectionMethod" to connectionMethod,"connectionHost" to host,"connectionPort" to port,"connectionSessionId" to lease?.invitation?.id,"destinationChosen" to (destination != null),
             "destinationLabel" to destination?.let { runCatching { android.provider.DocumentsContract.getTreeDocumentId(Uri.parse(it)) }.getOrDefault("Selected SAF folder") })
         val snapshot = latest
         main.post {
@@ -61,14 +76,30 @@ class TransferRuntime private constructor(private val context: Context) {
         update(latest)
         if(previous != null) metadata.execute { ledger.releaseUnused(listOf(previous)) }
     }
-    fun open(state: Map<String,Any?>, name: String, size: Int = 262144, reconnect: Boolean = false) {
+    @Synchronized fun open(state: Map<String,Any?>, name: String, size: Int = 262144, reconnect: Boolean = false) {
         check(foreground) { "Open FlashLink to establish an authenticated session" }
         check(session == null && latest["status"] !in ACTIVE) { "Session/transfer is already active" }
         val group = state["group"] as? Map<*,*> ?: error("Reconnect Wi-Fi Direct in Nearby first")
         check(state["phase"] == "connected")
         host = group["ownerAddress"] as? String ?: error("Group owner address unavailable")
         owner = group["isGroupOwner"] == true; peerName = name.take(32); bufferSize = size
+        connectionMethod = "wifiDirect"; connectionNetwork = null; route = null; port = Protocol.PORT
+        invitation = null
+        lease = if(owner) InvitationLease(ConnectionInvitation(host!!,Protocol.PORT,Protocol.id(),System.currentTimeMillis()+ConnectionInvitation.LIFETIME,identity.fingerprint,peerName)) else null
+        beginOpen(name,size,reconnect)
+    }
+    @Synchronized fun openLocal(ticket: ConnectionInvitation, local: LocalRoute, hosting: Boolean, name: String, size: Int = 262144) {
+        check(foreground && !connectionBusy) { "Close the existing connection before changing connection method" }
+        ticket.validate()
+        check(identity.peer != null && (hosting || identity.peer == ticket.fingerprint)) { "Compare and approve the peer fingerprint before connecting" }
+        host = ticket.host; port = ticket.port; owner = hosting; route = local
+        connectionMethod = "localWifi"; connectionNetwork = local.network
+        invitation = ticket; lease = if(hosting) InvitationLease(ticket) else null
+        beginOpen(name,size,false)
+    }
+    private fun beginOpen(name: String, size: Int, reconnect: Boolean) {
         require(size in Protocol.buffers); check(identity.peer != null) { "Compare and approve BOTH certificate fingerprints first" }
+        peerName = name.take(32); bufferSize = size
         check(retries.take()) { "Too many connection attempts. Wait one minute before trying again." }
         val approvedPeer = identity.peer ?: error("Approve the peer fingerprint first")
         val token = ++generation
@@ -92,17 +123,48 @@ class TransferRuntime private constructor(private val context: Context) {
                 check(retired?.awaitReleased() != false) { "Previous partial file is still closing; retry shortly" }
                 val tls = identity.tls(approvedPeer)
                 val socket = if(owner) {
+                    val activeLease = lease ?: error("Pairing session missing")
                     val listener = tls.serverSocketFactory.createServerSocket() as SSLServerSocket
                     server = listener; listener.reuseAddress = true
                     listener.enabledProtocols = listener.supportedProtocols.filter { it in listOf("TLSv1.2","TLSv1.3") }.toTypedArray()
                     listener.needClientAuth = true
-                    listener.bind(InetSocketAddress(InetAddress.getByName(host),Protocol.PORT),1); listener.soTimeout = 120000
-                    (listener.accept() as SSLSocket).also { listener.close(); server = null }
+                    listener.bind(InetSocketAddress(InetAddress.getByName(host),port),1)
+                    if(token != generation) { listener.close(); return }
+                    update(latest + mapOf("listenerReady" to true,"message" to "Listening for the approved peer. Pairing session expires in two minutes."))
+                    var accepted: SSLSocket? = null
+                    var rejects = 0
+                    while(accepted == null && activeLease.remainingMillis() > 0 && token == generation) {
+                        listener.soTimeout = activeLease.remainingMillis().coerceAtLeast(1)
+                        val candidate = listener.accept() as SSLSocket; connecting = candidate
+                        candidate.tcpNoDelay = true; candidate.keepAlive = true
+                        try {
+                            SecureTransport.authenticate(candidate)
+                            ConnectionHandshake.host(candidate,activeLease) { remoteName -> confirmConnection(token,remoteName,approvedPeer,activeLease) }
+                            accepted = candidate
+                        } catch(e:Exception) {
+                            runCatching { candidate.close() }; connecting = null
+                            if(activeLease.remainingMillis() <= 0 || decision != null || ++rejects >= 5 || e !is SSLException) throw e
+                            android.util.Log.w("FlashLinkConnection","Rejected a TLS peer (${e.javaClass.simpleName}); waiting for the approved phone")
+                        }
+                    }
+                    listener.close(); server = null
+                    accepted ?: error("Pairing invitation expired; create a new invitation")
                 } else {
-                    (tls.socketFactory.createSocket() as SSLSocket).also { connecting = it; it.connect(InetSocketAddress(host,Protocol.PORT),15000) }
+                    val raw = Socket(); rawConnecting = raw
+                    raw.tcpNoDelay = true; raw.keepAlive = true
+                    if(token != generation) { raw.close(); return }
+                    route?.let { local ->
+                        if(local.network != null) local.network.bindSocket(raw)
+                        raw.bind(InetSocketAddress(local.address,0))
+                    }
+                    raw.connect(InetSocketAddress(host,port),15000)
+                    (tls.socketFactory.createSocket(raw,host,port,true) as SSLSocket).also {
+                        connecting = it; rawConnecting = null
+                        SecureTransport.authenticate(it)
+                        ConnectionHandshake.client(it,invitation,peerName)
+                    }
                 }
                 connecting = socket
-                SecureTransport.authenticate(socket)
                 if(token != generation) { socket.close(); return }
                 val pin = approvedPeer
                 authenticatedPin = pin
@@ -152,15 +214,31 @@ class TransferRuntime private constructor(private val context: Context) {
                 connecting = null; session = created; created.start(); return
             } catch(e: Exception) {
                 last = e
-                runCatching { connecting?.close() }; connecting = null
+                runCatching { connecting?.close() }; connecting = null; runCatching { rawConnecting?.close() }; rawConnecting = null
                 runCatching { server?.close() }; server = null
                 if(e is SSLException || e is SecurityException || e is IllegalArgumentException) break // Authentication failures are never auto-retried.
             }
         }
         if(token == generation) {
-            update(latest + mapOf("status" to "connectionLost","ready" to false,"secure" to false,"message" to "Secure connection failed: ${last?.message}. Verify BOTH fingerprints and reopen the owner listener."))
+            update(latest + mapOf("status" to "connectionLost","ready" to false,"secure" to false,"message" to "Secure connection failed: ${last?.message}. Verify both fingerprints and create a fresh listener/invitation. Wi-Fi guest isolation can block local peers."))
             service?.stopIfIdle()
         }
+    }
+    private fun confirmConnection(token: Int, name: String, pin: String, currentLease: InvitationLease): Boolean {
+        if(token != generation || !foreground) return false
+        val pending = CompletableFuture<Boolean>(); decision = pending
+        update(mapOf("status" to "connectionApproval","ready" to false,"secure" to false,
+            "peer" to name,"candidateFingerprint" to pin,"connectionRequestId" to currentLease.invitation.id,
+            "message" to "A mutually authenticated peer requests a connection. Compare the fingerprint and accept within 40 seconds. No files have been accepted."))
+        return try {
+            val approved = pending.get(minOf(40_000,currentLease.remainingMillis().coerceAtLeast(1)).toLong(),TimeUnit.MILLISECONDS)
+            approved && foreground && token == generation
+        } catch(_:TimeoutException) { false }
+        finally { if(decision === pending) decision = null }
+    }
+    fun confirmConnection(id: String, accept: Boolean) {
+        check(foreground && latest["status"] == "connectionApproval" && latest["connectionRequestId"] == id) { "Connection confirmation expired or does not match" }
+        check(decision?.complete(accept) == true) { "Connection was already answered" }
     }
     private fun permitRequest(): Boolean = synchronized(offerTicks) {
         val now = SystemClock.elapsedRealtime()
@@ -235,7 +313,7 @@ class TransferRuntime private constructor(private val context: Context) {
     }
     fun cancel(id: String? = null, delete: Boolean = false) {
         if(id != null && latest["id"] != id) { metadata.execute { ledger.cancelSaved(id,delete) }; return }
-        generation++; runCatching { server?.close() }; runCatching { connecting?.close() }
+        generation++; decision?.complete(false); runCatching { server?.close() }; runCatching { connecting?.close() }; runCatching { rawConnecting?.close() }
         val previous = session; retired = previous; session = null
         val shouldCancelJob = latest["id"] is String && latest["status"] != "completed" || preparing.get() && latest["status"] == "preparing"
         if(previous != null) Thread {
@@ -254,6 +332,7 @@ class TransferRuntime private constructor(private val context: Context) {
         service?.stopIfIdle()
     }
     fun interrupt(reason: String) {
+        decision?.complete(false); runCatching { rawConnecting?.close() }
         runCatching { server?.close() }; runCatching { connecting?.close() }
         val previous = session
         if(previous != null) Thread { previous.interrupt(reason) }.start()
@@ -262,7 +341,7 @@ class TransferRuntime private constructor(private val context: Context) {
     companion object {
         @Volatile private var instance: TransferRuntime? = null
         fun get(context: Context): TransferRuntime = instance ?: synchronized(this) { instance ?: TransferRuntime(context.applicationContext).also { instance = it } }
-        val ACTIVE = setOf("preparing","waitingForApproval","transferring","verifying","finalizing","connecting","reconnecting")
+        val ACTIVE = setOf("preparing","waitingForApproval","transferring","verifying","finalizing","connecting","reconnecting","connectionApproval")
         val RETAINED = setOf("paused","interrupted","failed","completed","cancelled")
     }
 }

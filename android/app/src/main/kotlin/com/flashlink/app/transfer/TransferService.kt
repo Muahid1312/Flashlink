@@ -5,6 +5,7 @@ import android.content.*
 import android.content.pm.ServiceInfo
 import android.net.wifi.p2p.WifiP2pManager
 import android.os.*
+import android.net.*
 
 /** Connected-device foreground service owns the live TLS session, not an Activity. */
 class TransferService : Service() {
@@ -17,11 +18,19 @@ class TransferService : Service() {
     private var channel: WifiP2pManager.Channel? = null
     private val connection = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
+            if(runtime.connectionMethod != "wifiDirect") return
             try {
                 manager?.requestConnectionInfo(channel ?: return) { info ->
                     if(!info.groupFormed) runtime.interrupt("Wi-Fi Direct connection lost. Reconnect and resume the saved transfer.")
                 }
             } catch (_:SecurityException) { runtime.interrupt("Nearby permission changed. Regrant access before resuming.") }
+        }
+    }
+    private var monitoringLocal = false
+    private val localNetwork = object: ConnectivityManager.NetworkCallback() {
+        override fun onLost(network: Network) {
+            if(runtime.connectionMethod == "localWifi" && runtime.connectionNetwork == network)
+                runtime.interrupt("The selected local Wi-Fi network was lost. Reconnect both phones and create a fresh invitation.")
         }
     }
     override fun onCreate() {
@@ -31,11 +40,19 @@ class TransferService : Service() {
         if(Build.VERSION.SDK_INT >= 26) notifications.createNotificationChannel(NotificationChannel(CHANNEL,"FlashLink connection and transfers",NotificationManager.IMPORTANCE_LOW))
         val initial = notification(runtime.latest)
         if(Build.VERSION.SDK_INT >= 29) startForeground(ID,initial,ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) else startForeground(ID,initial)
-        manager = getSystemService(WIFI_P2P_SERVICE) as? WifiP2pManager
-        channel = manager?.initialize(applicationContext,main.looper) { runtime.interrupt("Wi-Fi Direct framework channel lost") }
-        val filter = IntentFilter(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
-        if(Build.VERSION.SDK_INT >= 33) registerReceiver(connection,filter,RECEIVER_EXPORTED) else registerReceiver(connection,filter)
-        registered = true
+        if(runtime.connectionMethod == "wifiDirect") {
+            try {
+            manager = getSystemService(WIFI_P2P_SERVICE) as? WifiP2pManager
+            channel = manager?.initialize(applicationContext,main.looper) { if(runtime.connectionMethod == "wifiDirect") runtime.interrupt("Wi-Fi Direct framework channel lost") }
+            val filter = IntentFilter(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+            if(Build.VERSION.SDK_INT >= 33) registerReceiver(connection,filter,RECEIVER_EXPORTED) else registerReceiver(connection,filter)
+            registered = true
+            } catch(e:Exception) { runtime.interrupt("Wi-Fi Direct monitoring failed (${e.javaClass.simpleName}); retry or use Local Wi-Fi / hotspot") }
+        }
+        try {
+            getSystemService(ConnectivityManager::class.java).registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),localNetwork)
+            monitoringLocal = true
+        } catch(_:Exception) { /* TLS heartbeat and socket IO still detect a lost route. */ }
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when(intent?.action) {
@@ -79,6 +96,7 @@ class TransferService : Service() {
     override fun onBind(intent: Intent?) = null
     override fun onDestroy() {
         if(registered) unregisterReceiver(connection)
+        if(monitoringLocal) runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(localNetwork) }
         if(Build.VERSION.SDK_INT >= 27) channel?.close()
         if(runtime.service === this) {
             runtime.service = null

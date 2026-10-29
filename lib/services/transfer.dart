@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/providers.dart';
 import '../domain/models.dart';
 
-enum TransferPhase { idle, preparing, waitingForApproval, connecting, transferring, verifying, completed, cancelled, failed, paused, interrupted, reconnecting, connectionLost, finalizing }
+enum TransferPhase { idle, preparing, waitingForApproval, connecting, transferring, verifying, completed, cancelled, failed, paused, interrupted, reconnecting, connectionLost, finalizing, connectionApproval }
 class TransferView {
   const TransferView(this.data);
   final Map<Object?, Object?> data;
@@ -12,7 +12,7 @@ class TransferView {
   bool get secure => ready && data['secure'] == true;
   bool get ready => data['ready'] == true;
   bool get destinationChosen => data['destinationChosen'] == true;
-  bool get active => const [TransferPhase.preparing, TransferPhase.waitingForApproval, TransferPhase.connecting, TransferPhase.reconnecting, TransferPhase.transferring, TransferPhase.verifying, TransferPhase.finalizing].contains(phase);
+  bool get active => const [TransferPhase.connectionApproval, TransferPhase.preparing, TransferPhase.waitingForApproval, TransferPhase.connecting, TransferPhase.reconnecting, TransferPhase.transferring, TransferPhase.verifying, TransferPhase.finalizing].contains(phase);
   bool get incoming => data['direction'] == 'received' && phase == TransferPhase.waitingForApproval;
   int get bytes => (data['bytes'] as num?)?.toInt() ?? 0;
   int get total => (data['total'] as num?)?.toInt() ?? 0;
@@ -23,12 +23,13 @@ class TransferView {
   double? get eta => phase == TransferPhase.transferring && bytes < total ? (data['etaSeconds'] as num?)?.toDouble() : null;
   double get fraction => phase == TransferPhase.completed ? 1 : total > 0 ? (bytes / total).clamp(0.0,1.0) : count > 0 ? completed / count : 0;
   String get label => switch(phase) {
+    TransferPhase.connectionApproval => 'Incoming connection · confirm peer',
     TransferPhase.idle => ready ? 'TCP session ready' : 'No active transfer',
     TransferPhase.preparing => data['resuming'] == true ? 'Validating saved checkpoint' : 'Preparing files', TransferPhase.waitingForApproval => incoming ? 'Incoming transfer request' : 'Waiting for receiver approval',
     TransferPhase.paused => 'Paused · checkpoint retained', TransferPhase.interrupted => 'Interrupted · resumable data retained',
     TransferPhase.reconnecting => 'Reconnecting securely', TransferPhase.connectionLost => 'Connection lost',
     TransferPhase.finalizing => 'Saving verified files to destination',
-    TransferPhase.connecting => 'Opening TCP session', TransferPhase.transferring => 'Transferring', TransferPhase.verifying => 'Verifying SHA-256',
+    TransferPhase.connecting => data['listenerReady'] == true ? 'Waiting for approved peer' : 'Opening TCP session', TransferPhase.transferring => 'Transferring', TransferPhase.verifying => 'Verifying SHA-256',
     TransferPhase.completed => 'Completed · verified', TransferPhase.cancelled => 'Cancelled', TransferPhase.failed => 'Failed',
   };
 }

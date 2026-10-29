@@ -1,3 +1,6 @@
+import 'package:flashlink/services/local_network.dart';
+import 'package:flashlink/services/connection.dart';
+import 'local_network_test.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -23,11 +26,14 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final repository = SettingsRepository(await SharedPreferences.getInstance());
     final wifi = FakeWifiPlatform();
+    final local = FakeLocalPlatform();
+    addTearDown(local.updates.close);
     final transfer = FakeTransferPlatform();
     addTearDown(transfer.updates.close);
     addTearDown(wifi.updates.close);
     final container = ProviderContainer(overrides: [
       wifiPlatformProvider.overrideWithValue(wifi),
+      localPlatformProvider.overrideWithValue(local),
       transferPlatformProvider.overrideWithValue(transfer),
       settingsRepositoryProvider.overrideWithValue(repository),
       historyProvider.overrideWith((ref) async => <TransferRecord>[]),
@@ -96,4 +102,17 @@ void main() {
     expect(find.text('Permission required'), findsOneWidget);
     expect(find.text('No devices to show'), findsOneWidget);
   });
+  testWidgets('local pairing controls remain usable on a narrow phone with large text', (tester) async {
+    final container = await launch(tester, size: const Size(320, 800), textScale: 1.4);
+    container.read(connectionMethodProvider.notifier).select(ConnectionMethod.localWifi);
+    container.read(routerProvider).go('/nearby');
+    await tester.pumpAndSettle();
+    expect(find.text('Host a local connection'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Manual IP / port pairing'), 300, scrollable: find.byType(Scrollable).last);
+    await tester.tap(find.text('Manual IP / port pairing'));
+    await tester.pumpAndSettle();
+    expect(find.text('Review manual connection'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
 }
