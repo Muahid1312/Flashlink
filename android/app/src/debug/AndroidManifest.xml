@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Flutter debugger only; absent from the main/release manifest. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>
