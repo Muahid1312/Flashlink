@@ -23,51 +23,81 @@ jobs:
       DART_SUPPRESS_ANALYTICS: 'true'
     steps:
       - name: Check out source
+        id: checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Set up Java 21
+        id: java
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Flutter 3.47.8
+        id: flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: '3.47.8'
           channel: stable
 
       - name: Set up Android SDK
+        id: android
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
 
       - name: Install required Android components
-        run: sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+        id: components
+        run: sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358' 2>&1 | tee "$RUNNER_TEMP/flashlink-components.log"
 
       - name: Install Flutter dependencies
-        run: flutter pub get
+        id: dependencies
+        run: flutter pub get 2>&1 | tee "$RUNNER_TEMP/flashlink-dependencies.log"
 
       - name: Analyze Flutter source
-        run: flutter analyze
+        id: analyze
+        run: flutter analyze 2>&1 | tee "$RUNNER_TEMP/flashlink-analyze.log"
 
       - name: Run Flutter tests
-        run: flutter test
+        id: flutter_tests
+        run: flutter test --reporter expanded 2>&1 | tee "$RUNNER_TEMP/flashlink-flutter_tests.log"
 
       - name: Run native ledger and protocol tests
+        id: native_tests
         working-directory: android
-        run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 --console=plain
+        run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 --console=plain 2>&1 | tee "$RUNNER_TEMP/flashlink-native_tests.log"
 
       - name: Build and verify debug APK
-        run: ./tool/build_apk.sh debug
+        id: apk
+        run: ./tool/build_apk.sh debug 2>&1 | tee "$RUNNER_TEMP/flashlink-apk.log"
 
       - name: Check APK artifact
+        id: verify
         run: test -s build/artifacts/flashlink-debug.apk
 
       - name: Upload installable debug APK
+        id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: FlashLink-Android-APK
           path: build/artifacts/flashlink-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Annotate a failed build
+        if: failure()
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          for name, step in json.loads(os.environ['STEP_RESULTS']).items():
+              if step.get('outcome') != 'failure':
+                  continue
+              log = Path(os.environ['RUNNER_TEMP']) / f'flashlink-{name}.log'
+              detail = log.read_text(errors='replace')[-16000:] if log.is_file() else 'Open this step in the signed-in job log for details.'
+              message = f'Step {name} failed.\n{detail}'
+              message = message.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title=FlashLink build failure::{message}')
+          PY
