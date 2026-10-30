@@ -5,6 +5,7 @@ import '../features/screens.dart';
 import '../features/connection_widgets.dart';
 import '../features/transfer_widgets.dart';
 import '../features/settings_screen.dart';
+import '../features/diagnostics_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   final router = GoRouter(routes: [
@@ -16,6 +17,7 @@ final routerProvider = Provider<GoRouter>((ref) {
     ]),
     GoRoute(path: '/send', builder: (context, state) => const SendScreen()),
     GoRoute(path: '/receive', builder: (context, state) => const ReceiveScreen()),
+    GoRoute(path: '/diagnostics', builder: (context, state) => const DiagnosticsScreen()),
     GoRoute(path: '/transfer', builder: (context, state) => const TransferScreen()),
   ]);
   ref.onDispose(router.dispose);

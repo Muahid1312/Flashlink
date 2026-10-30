@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/format.dart';
 import '../core/providers.dart';
@@ -82,6 +83,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         const SizedBox(height: 12),
         const Text('Applies to the next Wi-Fi Direct or local Wi-Fi session. Default: 256 KiB. Larger buffers are not guaranteed faster; measure with your phones. Security and integrity checks stay enabled.'),
       ])),
+      const SectionTitle('Developer tools'),
+      Panel(child: ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.speed_rounded),
+        title: const Text('Performance diagnostics'), subtitle: const Text('Measured transfer and storage timings · local only'),
+        trailing: const Icon(Icons.chevron_right_rounded), onTap: () => context.push('/diagnostics'))),
       const SectionTitle('Storage'),
       Panel(child: ref.watch(storageProvider).when(
         loading: () => const Text('Checking available storage…'),

@@ -42,6 +42,8 @@ class TransferSession(
     private val stallTimeoutSeconds: Long = 35,
 ) : Closeable {
     private val wire = Wire(socket.getInputStream(), socket.getOutputStream(), bufferSize)
+    private val socketSendBuffer = runCatching { socket.sendBufferSize }.getOrNull()
+    private val socketReceiveBuffer = runCatching { socket.receiveBufferSize }.getOrNull()
     private val reader = Executors.newSingleThreadExecutor()
     private val writer = Executors.newSingleThreadExecutor()
     private val deadlines = Executors.newSingleThreadScheduledExecutor()
@@ -57,6 +59,9 @@ class TransferSession(
     private var lastActivityHeartbeat = 0L
     private class Job(val manifest: Manifest, val outgoing: Boolean, val peer: String, val resuming: Boolean = false) {
         val started = System.currentTimeMillis()
+        val metrics = TransferMetrics()
+        val diagnosticId = Protocol.id()
+        val publicFiles = manifest.files.map { mapOf("name" to it.name,"size" to it.size,"mime" to it.mime) }
         var meter = Meter()
         val checkpointAcks = ArrayBlockingQueue<ByteArray>(4)
         val resumeAcks = ArrayBlockingQueue<ResumePoint>(1)
@@ -83,7 +88,7 @@ class TransferSession(
     fun start() {
         reader.execute {
             try {
-                socket.soTimeout = 15000; socket.tcpNoDelay = true
+                socket.soTimeout = 15000; socket.tcpNoDelay = true; socket.keepAlive = true
                 wire.write(Protocol.HELLO, Protocol.payload {
                     writeInt(0x464c4e4b); writeInt(Protocol.VERSION); text(Protocol.id(),64)
                     text(displayName.take(32)); text("sha256,sequential,approval,resume-v2",128); writeBoolean(true)
@@ -141,14 +146,16 @@ class TransferSession(
                     point.validate(manifest)
                     job.completed = point.completed; job.fileBytes = point.offset; job.checkpointOffset = point.offset
                     job.bytes = manifest.files.take(point.completed).sumOf { it.size } + point.offset
-                    if(resume) sources.forEachIndexed { index, source ->
-                        if(index >= point.completed) FileValidation.source(source,if(index == point.completed) point.offset else 0,
-                            if(index == point.completed) point.prefix else null, cancelled = { closed.get() || job.pause.get() || Thread.currentThread().isInterrupted }, activity = { touchActivity() })
+                    if(resume) job.metrics.measure(TransferMetrics.Stage.VALIDATION) {
+                        sources.forEachIndexed { index, source ->
+                            if(index >= point.completed) FileValidation.source(source,if(index == point.completed) point.offset else 0,
+                                if(index == point.completed) point.prefix else null, cancelled = { closed.get() || job.pause.get() || Thread.currentThread().isInterrupted }, activity = { touchActivity() })
+                        }
                     }
                     job.completed = point.completed
                     job.bytes = manifest.files.take(point.completed).sumOf { it.size } + point.offset
-                    job.meter = Meter(job.bytes); job.phase = "transferring"; lastIo = System.nanoTime(); emit(job, true)
-                    val buffer = ByteArray(bufferSize)
+                    job.metrics.begin(job.bytes); job.meter = Meter(job.bytes); job.phase = "transferring"; lastIo = System.nanoTime(); emit(job, true)
+                    val buffer = ByteArray(bufferSize + 5)
                     for ((index,source) in sources.withIndex()) {
                         if(index < point.completed) continue
                         val offset = if(index == point.completed) point.offset else 0L
@@ -158,8 +165,9 @@ class TransferSession(
                         val digest = MessageDigest.getInstance("SHA-256")
                         source.open().use { input ->
                             job.input = input
-                            FileValidation.seed(input,offset,digest) { touchActivity() }
+                            job.metrics.measure(TransferMetrics.Stage.VALIDATION) { FileValidation.seed(input,offset,digest) { touchActivity() } }
                             var remaining = source.meta.size - offset
+                            var emptyReads = 0
                             while (remaining > 0) {
                                 ensureActive(job)
                                 if(job.pause.get()) {
@@ -167,10 +175,12 @@ class TransferSession(
                                     wire.write(Protocol.PAUSED,Protocol.token(manifest.id))
                                     abort("Paused at a durable receiver checkpoint",false,"paused"); return@execute
                                 }
-                                val count = input.read(buffer,0,minOf(buffer.size.toLong(),remaining).toInt())
+                                val count = job.metrics.measure(TransferMetrics.Stage.READ) { input.read(buffer,5,minOf(bufferSize.toLong(),remaining).toInt()) }
                                 if (count < 0) throw EOFException("Selected file became shorter")
-                                if (count == 0) continue
-                                wire.write(Protocol.DATA,buffer,count); digest.update(buffer,0,count); job.chunk.update(buffer,0,count)
+                                if (count == 0) { if(++emptyReads >= 16) throw IOException("Source provider returned empty reads repeatedly"); continue }
+                                emptyReads = 0; job.metrics.read(count)
+                                job.metrics.measure(TransferMetrics.Stage.SOCKET) { wire.writeData(buffer,count) }
+                                job.metrics.measure(TransferMetrics.Stage.HASH) { digest.update(buffer,5,count); job.chunk.update(buffer,5,count) }
                                 remaining -= count; job.bytes += count; job.fileBytes += count
                                 lastIo = System.nanoTime(); emit(job)
                                 if(job.fileBytes - job.checkpointOffset >= Protocol.CHECKPOINT_BYTES) checkpoint(job)
@@ -179,7 +189,7 @@ class TransferSession(
                         }
                         job.input = null; ensureActive(job); job.phase = "verifying"; emit(job,true)
                         checkpoint(job)
-                        val finalHash = digest.digest()
+                        val finalHash = job.metrics.measure(TransferMetrics.Stage.VALIDATION) { digest.digest() }
                         require(MessageDigest.isEqual(finalHash,source.meta.sha256)) { "Source changed during streaming" }
                         wire.write(Protocol.HASH,finalHash); expectAck(job,Protocol.FILE_OK,source.meta.id)
                         job.completed++; job.phase = "transferring"; emit(job,true)
@@ -205,7 +215,7 @@ class TransferSession(
             check(!job.outgoing && job.phase == "waitingForApproval")
             job.store = storeFactory(job.manifest)
             approved(job.manifest)
-            job.meter = Meter(); job.phase = "transferring"; job.approval?.cancel(false); lastIo = System.nanoTime()
+            job.metrics.begin(0); job.meter = Meter(); job.phase = "transferring"; job.approval?.cancel(false); lastIo = System.nanoTime()
         }
         wire.write(Protocol.ACCEPT,Protocol.token(job.manifest.id)); emit(job,true)
     }
@@ -223,8 +233,9 @@ class TransferSession(
                 val file = job.current ?: error("Missing file boundary")
                 check(!job.outgoing && job.phase == "transferring" && job.output != null)
                 require(header.size > 0 && header.size.toLong() <= file.size - job.fileBytes) { "File exceeds declared size" }
-                wire.data(buffer,header.size)
-                job.output!!.write(buffer,0,header.size); job.hash!!.update(buffer,0,header.size); job.chunk.update(buffer,0,header.size)
+                job.metrics.measure(TransferMetrics.Stage.SOCKET) { wire.data(buffer,header.size) }
+                job.metrics.measure(TransferMetrics.Stage.WRITE) { job.output!!.write(buffer,0,header.size) }; job.metrics.written(header.size)
+                job.metrics.measure(TransferMetrics.Stage.HASH) { job.hash!!.update(buffer,0,header.size); job.chunk.update(buffer,0,header.size) }
                 job.bytes += header.size; job.fileBytes += header.size; lastIo = System.nanoTime(); emit(job)
                 continue
             }
@@ -252,11 +263,11 @@ class TransferSession(
                     ensureActive(job)
                     if(store == null) { active.compareAndSet(job,null); wire.write(Protocol.RESUME_REJECT,Protocol.token(manifest.id)); continue }
                     job.store = store; emit(job,true)
-                    val point = store.resumePoint { touchActivity() }; point.validate(manifest)
+                    val point = job.metrics.measure(TransferMetrics.Stage.VALIDATION) { store.resumePoint { touchActivity() } }; point.validate(manifest)
                     ensureActive(job)
                     job.completed = point.completed; job.fileBytes = point.offset; job.checkpointOffset = point.offset
                     job.bytes = manifest.files.take(point.completed).sumOf { it.size } + point.offset
-                    job.phase = "transferring"; job.meter = Meter(job.bytes)
+                    job.metrics.begin(job.bytes); job.phase = "transferring"; job.meter = Meter(job.bytes)
                     emit(job,true); wire.write(Protocol.RESUME_ACCEPT,point.encode())
                 }
                 Protocol.RESUME_ACCEPT -> {
@@ -277,7 +288,7 @@ class TransferSession(
                         require(text(64) == file.id); val offset = readLong(); val expected = ByteArray(32).also { readFully(it) }
                         require(offset == job.fileBytes && offset >= job.checkpointOffset && offset <= file.size)
                         require(MessageDigest.isEqual(job.chunk.digest(),expected)) { "Checkpoint chunk mismatch" }
-                        job.store!!.checkpoint(file,offset,expected); job.checkpointOffset = offset; job.checkpointObserved = true
+                        job.metrics.measure(TransferMetrics.Stage.CHECKPOINT) { job.store!!.checkpoint(file,offset,expected) }; job.checkpointOffset = offset; job.checkpointObserved = true
                     } }
                     wire.write(Protocol.CHECKPOINT_OK,body)
                 }
@@ -309,7 +320,7 @@ class TransferSession(
                     job.current = file
                     if(job.fileBytes > file.size || job.completed == 0 && job.bytes == 0L) job.fileBytes = 0
                     job.hash = MessageDigest.getInstance("SHA-256")
-                    job.store!!.prefix(file,job.fileBytes,job.hash!!) { touchActivity() }
+                    job.metrics.measure(TransferMetrics.Stage.VALIDATION) { job.store!!.prefix(file,job.fileBytes,job.hash!!) { touchActivity() } }
                     job.chunk = MessageDigest.getInstance("SHA-256"); job.checkpointOffset = job.fileBytes; job.checkpointObserved = false
                     job.output = job.store!!.open(file); emit(job,true)
                 }
@@ -319,9 +330,12 @@ class TransferSession(
                     require(!job.outgoing && job.phase == "transferring" && job.output != null && job.fileBytes == file.size &&
                         job.checkpointObserved && job.checkpointOffset == file.size && body.size == 32) { "Missing durable final checkpoint or invalid hash boundary" }
                     job.phase = "verifying"; emit(job,true)
-                    job.output!!.close(); job.output = null
-                    require(MessageDigest.isEqual(job.hash!!.digest(),body) && MessageDigest.isEqual(body,file.sha256)) { "SHA-256 mismatch; received files removed" }
-                    job.store!!.commit(file); job.completed++; job.current = null; job.fileBytes = 0; job.checkpointOffset = 0; job.phase = "transferring"
+                    job.metrics.measure(TransferMetrics.Stage.VALIDATION) {
+                        job.output!!.close(); job.output = null
+                        require(MessageDigest.isEqual(job.hash!!.digest(),body) && MessageDigest.isEqual(body,file.sha256)) { "SHA-256 mismatch; received files removed" }
+                        job.store!!.commit(file)
+                    }
+                    job.completed++; job.current = null; job.fileBytes = 0; job.checkpointOffset = 0; job.phase = "transferring"
                     wire.write(Protocol.FILE_OK,Protocol.token(file.id)); emit(job,true)
                 }
                 Protocol.DONE -> {
@@ -331,7 +345,7 @@ class TransferSession(
                     ensureActive(job)
                     job.phase = "finalizing"; emit(job,true)
                     var lastFinalizationHeartbeat = 0L
-                    job.store!!.finish { finalized ->
+                    job.metrics.measure(TransferMetrics.Stage.EXPORT) { job.store!!.finish { finalized ->
                         ensureActive(job)
                         require(finalized in job.finalizedBytes..job.manifest.total)
                         job.finalizedBytes = finalized
@@ -340,6 +354,7 @@ class TransferSession(
                             wire.write(Protocol.KEEPALIVE,byteArrayOf()); lastIo = now; lastFinalizationHeartbeat = now
                         }
                         emit(job)
+                    }
                     }
                     // Completion wins or loses atomically against Cancel. Never ACK and then delete the files.
                     if(finish(job,"completed",null)) wire.write(Protocol.COMPLETE,Protocol.token(job.manifest.id))
@@ -359,12 +374,14 @@ class TransferSession(
     fun interrupt(message: String) { abort(message,false,"interrupted") }
     private fun checkpoint(job: Job) {
         val file = job.current ?: return
-        val hash = job.chunk.digest()
-        val body = Protocol.payload { with(Protocol) { text(file.id,64); writeLong(job.fileBytes); write(hash) } }
-        wire.write(Protocol.CHECKPOINT,body)
-        val ack = job.checkpointAcks.poll(stallTimeoutSeconds,TimeUnit.SECONDS) ?: error("Checkpoint acknowledgement timed out")
-        ensureActive(job); require(MessageDigest.isEqual(body,ack)) { "Invalid checkpoint acknowledgement" }
-        job.checkpointOffset = job.fileBytes; senderCheckpoint(job.manifest,file,job.fileBytes)
+        job.metrics.measure(TransferMetrics.Stage.CHECKPOINT) {
+            val hash = job.chunk.digest()
+            val body = Protocol.payload { with(Protocol) { text(file.id,64); writeLong(job.fileBytes); write(hash) } }
+            wire.write(Protocol.CHECKPOINT,body)
+            val ack = job.checkpointAcks.poll(stallTimeoutSeconds,TimeUnit.SECONDS) ?: error("Checkpoint acknowledgement timed out")
+            ensureActive(job); require(MessageDigest.isEqual(body,ack)) { "Invalid checkpoint acknowledgement" }
+            job.checkpointOffset = job.fileBytes; senderCheckpoint(job.manifest,file,job.fileBytes)
+        }
     }
     @Synchronized private fun touchActivity() {
         if(closed.get()) throw InterruptedIOException("Connection closed during validation")
@@ -404,11 +421,14 @@ class TransferSession(
             if (!force && now - job.lastEvent < 200_000_000) return
             job.lastEvent = now
             event(mapOf("id" to job.manifest.id,"status" to job.phase,"resuming" to job.resuming,"direction" to if(job.outgoing) "sent" else "received",
-                "peer" to job.peer,"files" to job.manifest.files.map { mapOf("name" to it.name,"size" to it.size,"mime" to it.mime) },
+                "peer" to job.peer,"files" to job.publicFiles,
                 "total" to job.manifest.total,"bytes" to job.bytes,"finalizedBytes" to job.finalizedBytes,"fileBytes" to job.fileBytes,"currentFile" to job.current?.name,
-                "fileCount" to job.manifest.files.size,"completedFiles" to job.completed,"started" to job.started,
+                "currentFileSize" to job.current?.size,"currentFileIndex" to job.completed,"fileCount" to job.manifest.files.size,"completedFiles" to job.completed,"started" to job.started,
                 "ended" to if(job.phase in listOf("completed","cancelled","failed","paused","interrupted")) System.currentTimeMillis() else null,
-                "verified" to (job.phase == "completed"),"message" to message) + job.meter.sample(job.bytes,job.manifest.total))
+                "verified" to (job.phase == "completed"),"message" to message,
+                "diagnosticId" to job.diagnosticId,"metrics" to job.metrics.sample(job.bytes,job.phase in listOf("completed","failed","cancelled","paused","interrupted")),
+                "bufferSize" to bufferSize,"socketSendBuffer" to socketSendBuffer,
+                "socketReceiveBuffer" to socketReceiveBuffer) + job.meter.sample(job.bytes,job.manifest.total))
         }
     }
     private fun finish(job: Job, status: String, message: String?): Boolean {

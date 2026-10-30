@@ -57,6 +57,33 @@ class TransferBridge(private val activity: Activity, messenger: BinaryMessenger,
                     "history" -> async(result) { runtime.ledger.histories().map { row ->
                         row + mapOf("resumable" to (row["resumable"] == true && runtime.ledger.load(row["id"] as String)?.peer == runtime.identity.peer))
                     } }
+                    "diagnostics" -> async(result) { runtime.ledger.performance() }
+                    "clearDiagnostics" -> async(result) { runtime.ledger.clearPerformance(); null }
+                    "openFiles", "shareFiles" -> {
+                        val id = call.argument<String>("id") ?: error("Select a completed transfer")
+                        val share = call.method == "shareFiles"
+                        runtime.metadata.execute {
+                            try {
+                                val completed = runtime.ledger.completedDocuments(id)
+                                val documents = if(share) completed else completed.take(1)
+                                check(documents.isNotEmpty()) { "No completed files are available" }
+                                // Validate live access before launching another app. No broad storage permission.
+                                documents.forEach { (uri,_) -> activity.contentResolver.openAssetFileDescriptor(uri,"r")?.use { } ?: error("Destination file is missing") }
+                                val intent = if(share) Intent(if(documents.size == 1) Intent.ACTION_SEND else Intent.ACTION_SEND_MULTIPLE).apply {
+                                    type = documents.map { it.second }.distinct().singleOrNull()?.takeIf { it.contains('/') } ?: "*/*"
+                                    if(documents.size == 1) putExtra(Intent.EXTRA_STREAM,documents.first().first)
+                                    else putParcelableArrayListExtra(Intent.EXTRA_STREAM,ArrayList(documents.map { it.first }))
+                                } else Intent(Intent.ACTION_VIEW).apply { setDataAndType(documents.first().first,documents.first().second.ifBlank { "application/octet-stream" }) }
+                                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                intent.clipData = ClipData.newRawUri("FlashLink received files",documents.first().first).apply { documents.drop(1).forEach { addItem(ClipData.Item(it.first)) } }
+                                main.post {
+                                    if(!disposed) try { activity.startActivity(Intent.createChooser(intent,if(share) "Share received files" else "Open received file")); result.success(null) }
+                                    catch(_:ActivityNotFoundException) { result.error("FILE_APP","No installed app can handle this file type",null) }
+                                    catch(_:Exception) { result.error("FILE_ACCESS","The destination permission changed; open the folder in your file manager",null) }
+                                }
+                            } catch(_:Exception) { main.post { if(!disposed) result.error("FILE_ACCESS","The completed file is missing or its destination permission was revoked",null) } }
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             } catch(e:Exception) { result.error("TRANSFER_STATE",e.message ?: "Operation unavailable",null) }

@@ -77,6 +77,8 @@ class TransferScreen extends ConsumerWidget {
         if(state.data['message'] != null) Text(state.data['message'].toString()),
       ])),
       const SizedBox(height:24),
+      const TransferQueue(),
+      TextButton(onPressed: () => context.push('/diagnostics'), child: const Text('View performance diagnostics')),
       if (state.phase == TransferPhase.connectionApproval) const IncomingConnectionPanel(),
       if (state.incoming) const IncomingFilesPanel(),
       if(state.active) FilledButton.icon(onPressed:() => ref.read(transferProvider.notifier).command('cancel'),icon:const Icon(Icons.close_rounded),label:const Text('Cancel transfer')),
@@ -109,5 +111,32 @@ class IncomingFilesPanel extends ConsumerWidget {
       FilledButton(onPressed: transfer.secure && transfer.destinationChosen && !transfer.choosingDestination ? controller.accept : null, child: const Text('Accept files')),
       TextButton(onPressed: controller.reject, child: const Text('Reject')),
     ]));
+  }
+}
+
+
+class TransferQueue extends ConsumerWidget {
+  const TransferQueue({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(transferProvider);
+    final files = state.data['files'] as List? ?? const [];
+    if(files.isEmpty) return const SizedBox.shrink();
+    final index = (state.data['currentFileIndex'] as num?)?.toInt();
+    return Panel(child: ExpansionTile(tilePadding: EdgeInsets.zero,
+      title: Text('File queue · ${state.completed} / ${files.length} verified'),
+      children: [for(var i = 0; i < files.length; i++) Builder(builder: (context) {
+        final file = files[i] as Map;
+        final size = (file['size'] as num).toInt();
+        final verified = i < state.completed;
+        final current = !verified && i == index && state.data['currentFile'] != null;
+        final copied = verified ? size : current ? (state.data['fileBytes'] as num?)?.toInt() ?? 0 : 0;
+        return ListTile(contentPadding: EdgeInsets.zero,
+          leading: Icon(verified ? Icons.check_circle_outline : current ? Icons.sync_rounded : Icons.schedule_rounded),
+          title: Text(file['name'].toString()), subtitle: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text('${verified ? 'Verified' : current ? state.label : state.active ? 'Queued' : 'Unfinished'} · ${formatBytes(copied)} / ${formatBytes(size)}'),
+            if(current) LinearProgressIndicator(value: size > 0 ? (copied/size).clamp(0.0,1.0) : null),
+          ]));
+      })]));
   }
 }

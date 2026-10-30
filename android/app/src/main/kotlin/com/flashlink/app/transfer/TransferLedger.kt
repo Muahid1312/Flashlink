@@ -7,6 +7,7 @@ import android.os.StatFs
 import android.provider.DocumentsContract
 import android.webkit.MimeTypeMap
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.*
 import java.security.MessageDigest
 
@@ -23,6 +24,7 @@ class TransferLedger(val context: Context) : SQLiteOpenHelper(context,"flashlink
         db.execSQL("CREATE TABLE IF NOT EXISTS resume_jobs (id TEXT PRIMARY KEY,manifest BLOB NOT NULL,peer TEXT NOT NULL,direction TEXT NOT NULL,sources TEXT,destination TEXT,approved INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,updated INTEGER NOT NULL,deleted INTEGER NOT NULL DEFAULT 0,completion_receipt INTEGER NOT NULL DEFAULT 0)")
         db.execSQL("CREATE TABLE IF NOT EXISTS resume_files (job TEXT NOT NULL,id TEXT NOT NULL,offset INTEGER NOT NULL DEFAULT 0,verified INTEGER NOT NULL DEFAULT 0,export_uri TEXT,PRIMARY KEY(job,id))")
         db.execSQL("CREATE TABLE IF NOT EXISTS resume_chunks (job TEXT NOT NULL,file TEXT NOT NULL,start INTEGER NOT NULL,end INTEGER NOT NULL,hash BLOB NOT NULL,PRIMARY KEY(job,file,end))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS performance_samples (id TEXT PRIMARY KEY,recorded INTEGER NOT NULL,sample TEXT NOT NULL)")
     }
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
@@ -35,6 +37,42 @@ class TransferLedger(val context: Context) : SQLiteOpenHelper(context,"flashlink
         }
     }
     data class Saved(val manifest: Manifest, val peer: String, val outgoing: Boolean, val sources: List<String>, val destination: String?, val approved: Boolean, val status: String)
+    /** Bounded local diagnostics: explicit allowlist prevents accidental metadata disclosure. */
+    @Synchronized fun recordPerformance(event: Map<String,Any?>, method: String) {
+        val id = event["diagnosticId"] as? String ?: return
+        Protocol.validId(id)
+        if(event["status"] !in setOf("completed","paused","interrupted","failed","cancelled")) return
+        val metrics = event["metrics"] as? Map<*,*> ?: return
+        val sample = JSONObject()
+        for(key in listOf("attemptBytes","durationSeconds","applicationBps","peakSampleBps","readBps","writeBps","readSeconds","writeSeconds","socketIoSeconds","hashSeconds","checkpointSeconds","verificationSeconds","exportSeconds")) {
+            (metrics[key] as? Number)?.let { if(it.toDouble().isFinite() && it.toDouble() >= 0) sample.put(key,it) }
+        }
+        for(key in listOf("total","fileCount","bufferSize","socketSendBuffer","socketReceiveBuffer")) (event[key] as? Number)?.let { sample.put(key,it) }
+        sample.put("connectionMethod",if(method == "localWifi") "localWifi" else "wifiDirect")
+        sample.put("direction",if(event["direction"] == "sent") "sent" else "received")
+        sample.put("status",event["status"]); sample.put("resumed",event["resuming"] == true)
+        sample.put("interruptions",if(event["status"] in setOf("paused","interrupted")) 1 else 0)
+        val values = ContentValues().apply { put("id",id); put("recorded",System.currentTimeMillis()); put("sample",sample.toString()) }
+        val db = writableDatabase; db.beginTransaction()
+        try {
+            // Terminal cleanup can emit twice; retain the first measured terminal result.
+            db.insertWithOnConflict("performance_samples",null,values,SQLiteDatabase.CONFLICT_IGNORE)
+            db.execSQL("DELETE FROM performance_samples WHERE id NOT IN (SELECT id FROM performance_samples ORDER BY recorded DESC,rowid DESC LIMIT 100)")
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+    }
+    fun performance(): List<Map<String,Any?>> = readableDatabase.rawQuery("SELECT recorded,sample FROM performance_samples ORDER BY recorded DESC,rowid DESC",null).use { c -> buildList {
+        while(c.moveToNext()) { val json = JSONObject(c.getString(1)); add(json.keys().asSequence().associateWith { key -> json.get(key).let { if(it === JSONObject.NULL) null else it } } + mapOf("recorded" to c.getLong(0))) }
+    } }
+    @Synchronized fun clearPerformance() { writableDatabase.delete("performance_samples",null,null) }
+    fun completedDocuments(id: String): List<Pair<Uri,String>> {
+        val saved = load(id) ?: error("Transfer history is unavailable")
+        check(!saved.outgoing && saved.status == "completed" && receipt(id)) { "Only completed, verified received files can be opened or shared" }
+        return saved.manifest.files.map { meta ->
+            val uri = readableDatabase.rawQuery("SELECT export_uri FROM resume_files WHERE job=? AND id=? AND verified=1",arrayOf(id,meta.id)).use { c -> if(c.moveToFirst()) c.getString(0) else null } ?: error("The saved destination file is unavailable")
+            Uri.parse(uri).also { require(it.scheme == "content") } to meta.mime
+        }
+    }
     @Synchronized fun load(id: String): Saved? = readableDatabase.rawQuery("SELECT * FROM resume_jobs WHERE id=? AND deleted=0",arrayOf(id)).use { c ->
         if(!c.moveToFirst()) null else {
             fun text(name: String) = c.getString(c.getColumnIndexOrThrow(name))

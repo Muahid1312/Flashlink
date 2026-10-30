@@ -75,7 +75,7 @@ object RecoveryIntegration {
         }
         override fun rollback() = root.deleteRecursively()
     }
-    private class Link(val manifest: Manifest, root: File, val resume: Boolean = false, tls: Pair<SSLContext,SSLContext>? = null) : Closeable {
+    private class Link(val manifest: Manifest, root: File, val resume: Boolean = false, tls: Pair<SSLContext,SSLContext>? = null, buffer: Int = 262144) : Closeable {
         val sent = LinkedBlockingQueue<Map<String,Any?>>()
         val received = LinkedBlockingQueue<Map<String,Any?>>()
         val store = DiskStore(root,manifest)
@@ -92,9 +92,9 @@ object RecoveryIntegration {
                     SecureTransport.authenticate(client as SSLSocket); authenticated.get(20,TimeUnit.SECONDS)
                 } finally { executor.shutdownNow() }
             }
-            sender = TransferSession(client,"Sender",{error("not receiving")},{sent.offer(it)},{ok,_ -> if(ok) ready.countDown()})
+            sender = TransferSession(client,"Sender",{error("not receiving")},{sent.offer(it)},{ok,_ -> if(ok) ready.countDown()},buffer)
             receiver = TransferSession(accepted,"Receiver",{store},{received.offer(it)},{ok,_ -> if(ok) ready.countDown()},
-                canOffer = { !resume }, resumeStore = { request -> if(resume && request.encode().contentEquals(manifest.encode())) store else null })
+                bufferSize = buffer, canOffer = { !resume }, resumeStore = { request -> if(resume && request.encode().contentEquals(manifest.encode())) store else null })
             sender.start(); receiver.start(); check(ready.await(5,TimeUnit.SECONDS))
         }
         override fun close() { sender.close(); receiver.close(); sender.awaitReleased(); receiver.awaitReleased() }
@@ -113,7 +113,39 @@ object RecoveryIntegration {
         val manager = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()); manager.init(store,password.toCharArray())
         return manager.keyManagers to (store.getCertificate("node") as X509Certificate)
     }
+    /** Actual disk/TLS protocol profile on this host, never a phone/radio benchmark. */
+    fun profile(size: Long = 100_000_000L, repetitions: Int = 1) {
+        require(size > 0 && repetitions in 1..10)
+        val root = Files.createTempDirectory("flashlink-profile-").toFile()
+        try {
+            val source = File(root,"source.bin")
+            FileOutputStream(source).use { out ->
+                val block = ByteArray(262144) { (it%239).toByte() }; var remaining = size
+                while(remaining > 0) { val count = minOf(remaining,block.size.toLong()).toInt(); out.write(block,0,count); remaining -= count }; out.fd.sync()
+            }
+            val digest = source.inputStream().use { FileValidation.hash(it,size).first }
+            val a = keys(root,"profile-a"); val b = keys(root,"profile-b")
+            val tls = SecureTransport.context(a.first,SecureTransport.fingerprint(b.second)) to SecureTransport.context(b.first,SecureTransport.fingerprint(a.second))
+            for(buffer in Protocol.buffers) repeat(repetitions) { run ->
+                val meta = FileMeta(Protocol.id(),"profile.bin",size,"application/octet-stream",digest)
+                val manifest = Manifest(Protocol.id(),listOf(meta)); val folder = File(root,"parts").apply { mkdirs() }
+                Link(manifest,folder,tls=tls,buffer=buffer).use { link ->
+                    link.sender.send(manifest,listOf(Source(meta) { source.inputStream() }))
+                    waitFor(link.received) { it["status"] == "waitingForApproval" }
+                    val tick = System.nanoTime(); link.receiver.accept()
+                    val sent = waitFor(link.sent) { it["status"] == "completed" }
+                    waitFor(link.received) { it["status"] == "completed" }
+                    val seconds = (System.nanoTime()-tick)/1e9
+                    check(File(folder,meta.id).inputStream().use { FileValidation.hash(it,size).first }.contentEquals(digest))
+                    println("HOST DISK + PINNED TLS LOOPBACK ONLY bytes=$size buffer=$buffer run=${run+1} seconds=$seconds decimalMBps=${size/seconds/1e6} metrics=${sent["metrics"]}")
+                }
+                folder.deleteRecursively()
+            }
+        } finally { root.deleteRecursively() }
+    }
     @JvmStatic fun main(args: Array<String>) {
+        if(args.firstOrNull() == "--profile") { profile(args.getOrNull(1)?.toLong() ?: 100_000_000L,args.getOrNull(2)?.toInt() ?: 1); return }
+
         throughputOnly = args.contains("--throughput-only")
         val root = Files.createTempDirectory("flashlink-recovery-").toFile()
         try {

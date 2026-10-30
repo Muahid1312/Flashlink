@@ -155,7 +155,9 @@ class HistoryScreen extends ConsumerWidget {
     const SizedBox(height: 20), Text('Transfer history', style: Theme.of(context).textTheme.headlineLarge),
     const SizedBox(height: 10),
     Text('Every connection leaves a story.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
-    const SizedBox(height: 30), const HistoryContent(),
+    const SizedBox(height: 30),
+    if(ref.watch(transferProvider).data['message'] != null) Text(ref.watch(transferProvider).data['message'].toString()),
+    const HistoryContent(),
     const PhaseNotice(message: 'Actual outcomes are stored only on this device. Resume uses validated checkpoints. Reconnect and authenticate the original peer before resuming from the sending phone.'),
   ]);
 }
@@ -184,6 +186,10 @@ class HistoryContent extends ConsumerWidget {
             if(record.resumable && record.direction == 'received') const Text('Ready for the original sender to resume after reconnection'),
             if(!record.resumable && const ['paused','interrupted','failed'].contains(record.status)) const Text('Resume data is unavailable; select files for a new approved request.'),
             Wrap(children:[
+              if(record.verified && record.direction == 'received') ...[
+                TextButton(onPressed:() => ref.read(transferProvider.notifier).command('openFiles',{'id':record.id}),child:const Text('Open first file')),
+                TextButton(onPressed:() => ref.read(transferProvider.notifier).command('shareFiles',{'id':record.id}),child:const Text('Share files')),
+              ],
               if(record.resumable) TextButton(onPressed:() async { await ref.read(transferProvider.notifier).command('cancel',{'id':record.id}); ref.invalidate(historyProvider); },child:const Text('Cancel saved transfer')),
               TextButton(onPressed:() async {
                 final confirmed = await showDialog<bool>(context:context,builder:(dialogContext) => AlertDialog(

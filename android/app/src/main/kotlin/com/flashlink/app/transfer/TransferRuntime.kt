@@ -208,6 +208,12 @@ class TransferRuntime private constructor(private val context: Context) {
                     check(saved.destination != null) { "Choose a destination folder before opening a session" }
                     PrivateReceiveStore(ledger,saved)
                 },{ event ->
+                    if(event["status"] in setOf("completed","paused","interrupted","failed","cancelled")) {
+                        val method = connectionMethod
+                        metadata.execute { runCatching { ledger.recordPerformance(event,method) }.onFailure {
+                            android.util.Log.w("FlashLinkPerformance","Could not retain local diagnostics (${it.javaClass.simpleName})")
+                        } }
+                    }
                     val retained = event["status"] in RETAINED
                     val acceptsEvent = token == generation || (event["id"] == latest["id"] && latest["status"] == "cancelled" && event["status"] == "cancelled")
                     val snapshot = event + mapOf("ready" to (latest["ready"] == true && event["status"] !in setOf("paused","interrupted","failed","cancelled")),"secure" to (event["status"] !in setOf("paused","interrupted","failed","cancelled")))

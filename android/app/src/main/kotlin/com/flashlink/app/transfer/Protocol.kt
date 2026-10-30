@@ -76,7 +76,7 @@ data class Manifest(val id: String, val files: List<FileMeta>) {
 
 class Wire(input: InputStream, output: OutputStream, bufferSize: Int = 262144) : Closeable {
     private val input = DataInputStream(BufferedInputStream(input, bufferSize))
-    private val output = DataOutputStream(BufferedOutputStream(output, bufferSize))
+    private val output = DataOutputStream(BufferedOutputStream(output, bufferSize + 5))
     data class Header(val kind: Int, val size: Int)
     fun header(): Header {
         val kind = input.readUnsignedByte(); require(kind in Protocol.HELLO..Protocol.KEEPALIVE) { "Unknown frame" }
@@ -90,7 +90,18 @@ class Wire(input: InputStream, output: OutputStream, bufferSize: Int = 262144) :
     @Synchronized fun write(kind: Int, payload: ByteArray, size: Int = payload.size) {
         require(kind in Protocol.HELLO..Protocol.KEEPALIVE && size in 0..payload.size)
         require(size <= if (kind == Protocol.DATA) Protocol.MAX_DATA else Protocol.MAX_CONTROL)
-        output.writeByte(kind); output.writeInt(size); output.write(payload, 0, size); output.flush()
+        output.writeByte(kind); output.writeInt(size); output.write(payload, 0, size)
+        // Keep DATA bounded by the configured buffer. Every control boundary flushes,
+        // including checkpoints, final hashes and pause/cancel, so peers cannot deadlock.
+        if(kind != Protocol.DATA) output.flush()
+    }
+    /** Sender reads directly after five reserved header bytes: no per-frame allocation or payload copy. */
+    @Synchronized fun writeData(frame: ByteArray, size: Int) {
+        require(size in 1..Protocol.MAX_DATA && size <= frame.size-5)
+        frame[0] = Protocol.DATA.toByte()
+        frame[1] = (size ushr 24).toByte(); frame[2] = (size ushr 16).toByte()
+        frame[3] = (size ushr 8).toByte(); frame[4] = size.toByte()
+        output.write(frame,0,size+5)
     }
     override fun close() { try { input.close() } finally { output.close() } }
 }

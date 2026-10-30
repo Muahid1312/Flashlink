@@ -24,6 +24,32 @@ class LedgerAuditTest {
     private fun manifest() = Manifest(Protocol.id(),listOf(FileMeta(Protocol.id(),"test.bin",10,"application/octet-stream",ByteArray(32))))
     private fun event(manifest: Manifest,status: String) = mapOf<String,Any?>("id" to manifest.id,"status" to status,"bytes" to manifest.total,"started" to 1000L,"averageBps" to 100.0)
 
+    @Test fun diagnosticsAreBoundedPrivateDeduplicatedAndSurviveReopen() {
+        val id = Protocol.id()
+        val sample = mapOf<String,Any?>("diagnosticId" to id,"status" to "interrupted","direction" to "sent","resuming" to true,
+            "peer" to "PRIVATE_PEER","files" to listOf("PRIVATE_NAME"),"uri" to "content://PRIVATE_URI", "total" to 5_000_000_000L,
+            "metrics" to mapOf("attemptBytes" to 100L,"durationSeconds" to 1.0,"applicationBps" to 100.0,"readBps" to Double.NaN,"fileName" to "PRIVATE_NAME"))
+        ledger.recordPerformance(sample,"localWifi"); ledger.recordPerformance(sample + ("status" to "completed"),"localWifi")
+        ledger.close(); ledger = TransferLedger(context)
+        val row = ledger.performance().single()
+        assertEquals("interrupted",row["status"]); assertEquals(5_000_000_000L,row["total"])
+        assertEquals(1,row["interruptions"]); assertEquals(true,row["resumed"])
+        assertFalse(row.toString().contains("PRIVATE")); assertFalse(row.containsKey("readBps"))
+        repeat(101) { ledger.recordPerformance(sample + ("diagnosticId" to Protocol.id()),"wifiDirect") }
+        assertEquals(100,ledger.performance().size)
+        ledger.clearPerformance(); assertTrue(ledger.performance().isEmpty())
+    }
+    @Test fun onlyVerifiedCompletedReceivesCanExposeDestinationDocuments() {
+        val manifest = manifest(); ledger.create(manifest,"a".repeat(64),false,destination="content://test/tree/folder")
+        assertTrue(runCatching { ledger.completedDocuments(manifest.id) }.isFailure)
+        ledger.state(event(manifest,"completed"))
+        assertTrue(runCatching { ledger.completedDocuments(manifest.id) }.isFailure)
+        ledger.writableDatabase.execSQL("INSERT INTO resume_files(job,id,verified,export_uri) VALUES(?,?,1,?)",arrayOf(manifest.id,manifest.files.single().id,"content://test/document/complete"))
+        assertEquals("content://test/document/complete",ledger.completedDocuments(manifest.id).single().first.toString())
+        ledger.cancelSaved(manifest.id,true)
+        assertTrue(runCatching { ledger.completedDocuments(manifest.id) }.isFailure)
+    }
+
     @Test fun historyValidationDoesNotTruncateUnconfirmedTail() {
         val manifest = manifest(); val file = manifest.files.single()
         ledger.create(manifest,"a".repeat(64),false)

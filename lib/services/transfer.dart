@@ -62,7 +62,7 @@ class TransferController extends Notifier<TransferView> {
   void _accept(TransferView next) {
     if(_closed) return;
     state = next;
-    if(const [TransferPhase.completed,TransferPhase.failed,TransferPhase.cancelled,TransferPhase.paused,TransferPhase.interrupted,TransferPhase.connectionLost].contains(next.phase)) ref.invalidate(historyProvider);
+    if(const [TransferPhase.completed,TransferPhase.failed,TransferPhase.cancelled,TransferPhase.paused,TransferPhase.interrupted,TransferPhase.connectionLost].contains(next.phase)) { ref.invalidate(historyProvider); ref.invalidate(diagnosticsProvider); }
   }
   void _error(String message) {
     if(!_closed) state = TransferView({...state.data,'message':message});
@@ -78,7 +78,7 @@ class TransferController extends Notifier<TransferView> {
       final result = await ref.read(transferPlatformProvider).invoke(method,arguments);
       if(method == 'snapshot' && result is Map) _accept(TransferView(Map<Object?,Object?>.from(result)));
     } on PlatformException catch(error) {
-      if(const ['resume','retry','cancel','deleteHistory'].contains(method)) ref.invalidate(historyProvider);
+      if(const ['resume','retry','cancel','deleteHistory'].contains(method)) { ref.invalidate(historyProvider); ref.invalidate(diagnosticsProvider); }
       _error(error.message ?? 'Transfer operation failed.'); }
     catch (_) { _error('Transfer operation unavailable. Retry on an Android device.'); }
     finally { _pending = false; }
@@ -94,4 +94,10 @@ class TransferController extends Notifier<TransferView> {
 final pairingProvider = FutureProvider<Map<Object?,Object?>>((ref) async {
   final result = await ref.read(transferPlatformProvider).invoke('pairing');
   return Map<Object?,Object?>.from(result as Map);
+});
+
+
+final diagnosticsProvider = FutureProvider.autoDispose<List<Map<Object?,Object?>>>((ref) async {
+  final result = await ref.read(transferPlatformProvider).invoke('diagnostics');
+  return (result as List).map((row) => Map<Object?,Object?>.from(row as Map)).toList();
 });

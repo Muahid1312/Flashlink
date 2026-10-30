@@ -64,7 +64,7 @@ void main() {
 
   testWidgets('all screens render on a narrow phone with large text and no fake data', (tester) async {
     final container = await launch(tester, size: const Size(320, 800), textScale: 1.4);
-    for (final route in ['/', '/nearby', '/history', '/settings', '/send', '/receive', '/transfer']) {
+    for (final route in ['/', '/nearby', '/history', '/settings', '/send', '/receive', '/transfer', '/diagnostics']) {
       container.read(routerProvider).go(route);
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull, reason: route);
