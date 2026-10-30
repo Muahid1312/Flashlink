@@ -60,34 +60,55 @@ class InvitationLease(val invitation: ConnectionInvitation, private val now: ()-
     fun remainingMillis(): Int = ((deadline-now())/1_000_000).coerceIn(0,ConnectionInvitation.LIFETIME).toInt()
 }
 
-/** Runs only INSIDE mutually pinned TLS, before TransferSession can read file metadata. */
+/** Admission runs inside TLS, before TransferSession can read file metadata.
+ * Both nonces are committed before either is revealed, preventing an active peer from
+ * grinding a replacement certificate/nonce to match the six-digit comparison code.
+ * The receiver is pinned by the sender; receiver admission requires explicit code approval. */
 object ConnectionHandshake {
-    private const val MAGIC = 0x464c5031
+    private const val MAGIC = 0x464c5032
     private fun text(input: DataInputStream, max: Int): String {
         val size = input.readUnsignedShort(); require(size in 1..max)
         val bytes = ByteArray(size); input.readFully(bytes)
         return DataInputStream(java.io.ByteArrayInputStream(byteArrayOf((size ushr 8).toByte(),size.toByte())+bytes)).readUTF()
     }
-    fun client(socket: Socket, invitation: ConnectionInvitation?, name: String) {
+    private fun nonce() = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+    private fun hash(value: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(value)
+    private fun bytes(input: DataInputStream) = ByteArray(32).also { input.readFully(it) }
+    private fun verify(nonce: ByteArray, commitment: ByteArray) {
+        require(java.security.MessageDigest.isEqual(hash(nonce),commitment)) { "Authentication failed: pairing commitment changed" }
+    }
+    fun client(socket: Socket, invitation: ConnectionInvitation?, name: String,
+        localPin: String? = null, remotePin: String? = null, codeReady: (String)->Unit = {}) {
         socket.soTimeout = 55_000
         val input = DataInputStream(socket.getInputStream())
         require(input.readInt() == MAGIC) { "Update FlashLink on both phones; pairing protocols differ" }
         val id = text(input,64); Protocol.validId(id)
         require(invitation == null || id == invitation.id) { "Pairing session differs from the invitation; create a new invitation" }
+        val hostCommitment = bytes(input)
+        val clientNonce = nonce()
         val out = DataOutputStream(socket.getOutputStream())
-        out.writeInt(MAGIC); out.writeUTF(id); out.writeUTF(name.take(32)); out.flush()
+        out.writeInt(MAGIC); out.writeUTF(id); out.writeUTF(name.take(32)); out.write(hash(clientNonce)); out.flush()
+        val hostNonce = bytes(input); verify(hostNonce,hostCommitment)
+        out.write(clientNonce); out.flush()
+        if(localPin != null && remotePin != null) codeReady(SecureTransport.pairingCode(id,localPin,remotePin,hostNonce,clientNonce))
         require(input.readInt() == MAGIC && text(input,64) == id) { "Incompatible or mismatched pairing session" }
         if(!input.readBoolean()) throw SecurityException("The other phone rejected the connection or approval timed out")
     }
-    fun host(socket: Socket, lease: InvitationLease, confirm: (String)->Boolean) {
+    fun host(socket: Socket, lease: InvitationLease, localPin: String? = null,
+        remotePin: String? = null, codeReady: (String)->Unit = {}, confirm: (String)->Boolean) {
         socket.soTimeout = minOf(15_000,lease.remainingMillis().coerceAtLeast(1))
         val out = DataOutputStream(socket.getOutputStream())
-        out.writeInt(MAGIC); out.writeUTF(lease.invitation.id); out.flush()
+        val hostNonce = nonce()
+        out.writeInt(MAGIC); out.writeUTF(lease.invitation.id); out.write(hash(hostNonce)); out.flush()
         val input = DataInputStream(socket.getInputStream())
         require(input.readInt() == MAGIC) { "Incompatible FlashLink pairing protocol" }
         val id = text(input,64); val name = text(input,128)
         require(name.isNotBlank() && name.length <= 32 && name.none { it.isISOControl() })
         if(!lease.claim(id)) throw SecurityException("Pairing invitation expired, was rejected, or has already been used")
+        val clientCommitment = bytes(input)
+        out.write(hostNonce); out.flush()
+        val clientNonce = bytes(input); verify(clientNonce,clientCommitment)
+        if(localPin != null && remotePin != null) codeReady(SecureTransport.pairingCode(id,localPin,remotePin,hostNonce,clientNonce))
         val accepted = confirm(name)
         out.writeInt(MAGIC); out.writeUTF(id); out.writeBoolean(accepted); out.flush()
         if(!accepted) throw SecurityException("Connection rejected or confirmation timed out")

@@ -18,6 +18,18 @@ class TransferControls extends ConsumerWidget {
     final controller = ref.read(transferProvider.notifier);
     final wifi = ref.watch(wifiProvider);
     final localMode = ref.watch(effectiveConnectionMethodProvider) == ConnectionMethod.localWifi;
+    if (localMode) {
+      if (!receiving && !transfer.incoming) { return const SizedBox.shrink(); }
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (receiving && !transfer.incoming) Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Text(transfer.destinationChosen ? 'Save folder selected' : 'First, choose where received files will be saved.'),
+          TextButton(onPressed: transfer.canChooseDestination ? () => controller.command('chooseDestination') : null,
+            child: Text(transfer.choosingDestination ? 'Choosing folder…' : 'Choose destination folder')),
+        ])),
+        if (transfer.incoming) const IncomingFilesPanel(),
+        if (transfer.data['id'] != null) TextButton(onPressed: () => context.push('/transfer'), child: const Text('View transfer progress')),
+      ]);
+    }
     return Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch,children: [
       StatusPill(label:transfer.label),
       if(transfer.secure) const StatusPill(label:'Authenticated · TLS',icon:Icons.verified_user_outlined),

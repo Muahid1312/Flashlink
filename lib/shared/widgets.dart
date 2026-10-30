@@ -9,14 +9,8 @@ class PageBody extends StatelessWidget {
     alignment: Alignment.topCenter,
     child: SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
-      child: TweenAnimationBuilder<double>(
-        tween: Tween(begin: 0, end: 1),
-        duration: Duration(milliseconds: MediaQuery.disableAnimationsOf(context) ? 0 : 220),
-        builder: (context, value, child) => Opacity(opacity: value,
-          child: Transform.translate(offset: Offset(0, 8 * (1 - value)), child: child)),
-        child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 680),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children)),
-      ),
+      child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 680),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children)),
     ),
   );
 }

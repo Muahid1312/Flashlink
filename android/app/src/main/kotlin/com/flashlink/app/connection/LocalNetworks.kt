@@ -35,7 +35,7 @@ object LocalNetworks {
         // A hotspot owner often has no ConnectivityManager Wi-Fi Network. Bind its actual AP address.
         for(device in NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()) {
             if(!device.isUp || device.isLoopback || device.name.startsWith("p2p") ||
-                !Regex("(?i)(wlan|wifi|ap|swlan|softap).*" ).matches(device.name)) continue
+                !Regex("(?i)((wlan|wifi|ap|swlan|softap).*|br[0-9]+)" ).matches(device.name)) continue
             for(link in device.interfaceAddresses) {
                 val ip = link.address.hostAddress ?: continue
                 if(link.address is Inet4Address && ConnectionInvitation.localAddress(ip) && result.none { it.address == ip })
@@ -44,6 +44,10 @@ object LocalNetworks {
         }
         return result.distinctBy { it.address }
     }
-    fun toPeer(context: Context, host: String): LocalRoute = routes(context).firstOrNull { it.contains(host) && it.address != host }
-        ?: error("That address is not on an observed local Wi-Fi / hotspot subnet. Connect both phones to the same Wi-Fi or hotspot; guest/client isolation may block peers.")
+    fun hostRoute(routes: List<LocalRoute>, address: String?): LocalRoute =
+        routes.firstOrNull { it.address == address } ?: routes.firstOrNull { address == null && it.network == null } ?:
+        routes.firstOrNull { address == null } ?: error("Connect to Wi-Fi or enable your phone's hotspot in Android settings first")
+    fun toPeer(context: Context, host: String): LocalRoute = peerRoute(routes(context),host)
+    fun peerRoute(routes: List<LocalRoute>, host: String): LocalRoute = routes.filter { it.contains(host) && it.address != host }.maxByOrNull { it.prefix }
+        ?: error("Phones are not on the same network: that address is outside the observed Wi-Fi / hotspot subnets. Connect both phones to the same Wi-Fi or hotspot; guest/client isolation may block peers.")
 }

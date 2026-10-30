@@ -7,7 +7,7 @@ enum ConnectionMethod { wifiDirect, localWifi }
 final connectionMethodProvider = NotifierProvider<ConnectionMethodController, ConnectionMethod>(ConnectionMethodController.new);
 class ConnectionMethodController extends Notifier<ConnectionMethod> {
   @override
-  ConnectionMethod build() => ConnectionMethod.wifiDirect;
+  ConnectionMethod build() => ConnectionMethod.localWifi;
   void select(ConnectionMethod method) {
     final transfer = ref.read(transferProvider);
     if (transfer.ready || transfer.active || ref.read(wifiProvider).busy) { return; }

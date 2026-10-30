@@ -1,56 +1,55 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../core/providers.dart';
 import '../services/local_network.dart';
 import '../services/transfer.dart';
 import '../shared/widgets.dart';
-import 'pairing_widget.dart';
+import 'connection_widgets.dart';
+import 'qr_scanner_screen.dart';
 
 class LocalConnectionPanel extends ConsumerStatefulWidget {
-  const LocalConnectionPanel({super.key});
+  const LocalConnectionPanel({super.key, this.receiving = false, this.advanced = false});
+  final bool receiving;
+  final bool advanced;
   @override
   ConsumerState<LocalConnectionPanel> createState() => _LocalConnectionPanelState();
 }
 class _LocalConnectionPanelState extends ConsumerState<LocalConnectionPanel> {
   final _link = TextEditingController();
-  final _host = TextEditingController();
-  final _port = TextEditingController(text: '45871');
-  final _session = TextEditingController();
-  final _pin = TextEditingController();
   String? _address;
   bool _pending = false;
   String? _error;
   @override
-  void dispose() { for (final c in [_link, _host, _port, _session, _pin]) { c.dispose(); } super.dispose(); }
-  Future<void> _connect({Map<Object?, Object?>? discovered, bool manual = false}) async {
-    String? fingerprint;
-    String? invitation;
-    try {
-      invitation = discovered?['uri'] as String? ?? _link.text.trim();
-      fingerprint = manual ? _pin.text.trim().replaceAll(RegExp(r'[:\s]'), '').toLowerCase() : Uri.parse(invitation).queryParameters['pin'];
-      if (fingerprint == null || !RegExp(r'^[0-9a-f]{64}$').hasMatch(fingerprint)) { throw const FormatException(); }
-    } catch (_) { setState(() => _error = 'Paste a complete FlashLink invitation or enter all manual pairing fields.'); return; }
+  void dispose() { _link.dispose(); super.dispose(); }
+  Future<void> _scan() async {
+    final link = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => const QrScannerScreen()));
+    if (link != null && mounted) { await _connect(link); }
+  }
+  Future<void> _connect(String text) async {
+    LocalInvitation invitation;
+    try { invitation = LocalInvitation.parse(text); }
+    on FormatException catch (e) { setState(() => _error = e.message); return; }
     final accepted = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
-      title: const Text('Confirm the other phone'),
-      content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Text('Compare this complete fingerprint with the other phone in person. Discovery names and invitation links are not proof of identity.'),
-        const SizedBox(height: 12), SelectableText(fingerprint!),
+      title: const Text('Connect to receiver?'),
+      content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(invitation.name),
+        const SizedBox(height: 12),
+        const Text('Use a QR from the receiving phone. After connecting, compare the six-digit code on both screens and accept on the receiver only if it matches.'),
+        ExpansionTile(title: const Text('Receiver fingerprint'), children: [SelectableText(invitation.fingerprint)]),
       ])),
-      actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Reject')),
-        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Matches · connect'))],
+      actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Connect'))],
     ));
     if (accepted != true || !mounted) { return; }
     setState(() { _pending = true; _error = null; });
     try {
-      await ref.read(transferPlatformProvider).invoke('approvePairing', {'fingerprint': fingerprint});
+      await ref.read(localProvider.notifier).connectInvitation(invitation,
+        name: ref.read(settingsProvider).deviceName, bufferSize: ref.read(settingsProvider).transferBufferBytes);
       ref.invalidate(pairingProvider);
-      final arguments = <String, Object?>{'name': ref.read(settingsProvider).deviceName, 'bufferSize': ref.read(settingsProvider).transferBufferBytes};
-      if (manual) {
-        arguments.addAll({'host': _host.text.trim(), 'port': int.parse(_port.text), 'id': _session.text.trim(), 'fingerprint': fingerprint});
-      } else { arguments['invitation'] = invitation; }
-      await ref.read(localProvider.notifier).command(manual ? 'connectManual' : 'connect', arguments);
-    } catch (_) { if (mounted) { setState(() => _error = 'Could not approve this peer. Close the current session and retry.'); } }
+    } on PlatformException catch (e) { if (mounted) { setState(() => _error = e.message ?? 'Pairing failed. Scan a fresh receiver QR.'); } }
+    catch (_) { if (mounted) { setState(() => _error = 'Pairing unavailable. Retry on Android.'); } }
     finally { if (mounted) { setState(() => _pending = false); } }
   }
   @override
@@ -59,75 +58,76 @@ class _LocalConnectionPanelState extends ConsumerState<LocalConnectionPanel> {
     final transfer = ref.watch(transferProvider);
     final blocked = _pending || transfer.active || transfer.ready;
     final controller = ref.read(localProvider.notifier);
-    final ticket = local.invitation;
+    final ticket = local.listening ? local.invitation : null;
+    final receiving = widget.receiving || widget.advanced;
+    final sending = !widget.receiving || widget.advanced;
     final addresses = local.addresses.map((e) => e['address'] as String).toList();
-    final chosen = addresses.contains(_address) ? _address : addresses.firstOrNull;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      if (transfer.phase == TransferPhase.connectionApproval) ...[const IncomingConnectionPanel(), const SizedBox(height: 16)],
       Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        StatusPill(label: local.label, icon: Icons.router_outlined),
+        Semantics(liveRegion: true, child: StatusPill(label: transfer.secure ? 'Connected · encrypted' : transfer.active ? transfer.label : local.label,
+          icon: transfer.secure ? Icons.verified_user_outlined : Icons.wifi_rounded)),
         const SizedBox(height: 12),
-        if (transfer.data['connectionMethod'] == 'localWifi') ...[
-          Semantics(liveRegion: true, child: Text(transfer.label)),
-          if (transfer.data['message'] != null) Text(transfer.data['message'].toString()),
-          if (transfer.ready) Text('Peer: ${transfer.data['peer']} · ${transfer.data['connectionHost']}:${transfer.data['connectionPort']}'),
+        if (!transfer.secure && !transfer.active) ...[
+          const Text('Use the same Wi-Fi, or enable a hotspot on one phone and join it from the other. No internet needed.'),
+          Wrap(spacing: 8, children: [
+            TextButton(onPressed: () => controller.command('openWifiSettings'), child: const Text('Wi-Fi settings')),
+            TextButton(onPressed: () => controller.command('openHotspotSettings'), child: const Text('Hotspot settings')),
+          ]),
         ],
-        const Text('Join the same Wi-Fi network, or enable one phone’s hotspot in Android settings and join it from the other. Internet is not required. FlashLink does not turn hotspots on automatically.'),
-        if (local.message != null) Padding(padding: const EdgeInsets.only(top: 12), child: Text(local.message!)),
+        if (local.message != null) Text(local.message!),
         if (_error != null) Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-        if (!local.available) const Text('No supported local IPv4 interface is visible. Join Wi-Fi / enable your hotspot, then refresh.'),
-        if (addresses.isNotEmpty) ...[
+        if (transfer.data['connectionMethod'] == 'localWifi' && transfer.data['message'] != null) Text(transfer.data['message'].toString()),
+        if (transfer.data['pairingCode'] != null && !transfer.secure && transfer.active && transfer.phase != TransferPhase.connectionApproval) ...[
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(initialValue: chosen, key: ValueKey(addresses.join(',')), isExpanded: true,
-            decoration: const InputDecoration(labelText: 'Local listening address'),
-            items: [for (final address in addresses) DropdownMenuItem(value: address, child: Text(address))],
-            onChanged: blocked ? null : (value) => setState(() => _address = value)),
+          Text(transfer.data['pairingCode'].toString(), textAlign: TextAlign.center, style: Theme.of(context).textTheme.headlineLarge),
+          const Text('Compare this code on both phones. Accept on the receiver only if they match.', textAlign: TextAlign.center),
         ],
-        const SizedBox(height: 12),
-        FilledButton.icon(onPressed: blocked || !local.available ? null : () => controller.command('startHost', {'name': ref.read(settingsProvider).deviceName, 'address': chosen, 'bufferSize': ref.read(settingsProvider).transferBufferBytes}),
-          icon: const Icon(Icons.qr_code_rounded), label: const Text('Host a local connection')),
-        OutlinedButton(onPressed: blocked || !local.available ? null : () => controller.command(local.discovering ? 'stopDiscovery' : 'discover'),
-          child: Text(local.discovering ? 'Stop local search' : 'Find FlashLink on local Wi-Fi')),
-        TextButton(onPressed: () => controller.command('snapshot'), child: const Text('Refresh local status')),
-        if (transfer.active || transfer.ready) TextButton(onPressed: () => ref.read(transferProvider.notifier).command('cancel'), child: const Text('Close current session')),
-        if (local.available) const Text('Local Wi-Fi / hotspot is available as an alternative. Neither mode is claimed faster without measurements on your phones.'),
+        if (!local.available && !transfer.secure) Text(local.data['networkHint'] as String? ?? 'No local address found. Join Wi-Fi or enable a hotspot, then refresh.'),
+        if (widget.advanced && addresses.isNotEmpty) DropdownButtonFormField<String>(
+          initialValue: addresses.contains(_address) ? _address : null, key: ValueKey(addresses.join(',')), isExpanded: true,
+          decoration: const InputDecoration(labelText: 'Listening address (automatic by default)'),
+          items: [for (final address in addresses) DropdownMenuItem(value: address, child: Text(address))],
+          onChanged: blocked ? null : (value) => setState(() => _address = value)),
+        if (receiving && !transfer.secure) ...[
+          const SizedBox(height: 12),
+          FilledButton.icon(onPressed: blocked || !local.available ? null : () => controller.command('startHost', {
+            'name': ref.read(settingsProvider).deviceName, 'address': _address, 'bufferSize': ref.read(settingsProvider).transferBufferBytes}),
+            icon: const Icon(Icons.qr_code_rounded), label: const Text('Start receiving')),
+        ],
+        if (sending && !transfer.secure && !transfer.active) ...[
+          const SizedBox(height: 12),
+          FilledButton.icon(onPressed: blocked || !local.available ? null : _scan,
+            icon: const Icon(Icons.qr_code_scanner_rounded), label: const Text('Scan receiver QR')),
+          OutlinedButton(onPressed: blocked || !local.available ? null : () => controller.command(local.discovering ? 'stopDiscovery' : 'discover'),
+            child: Text(local.discovering ? 'Stop search' : 'Find receiver')),
+        ],
+        if (!transfer.secure && !transfer.active) TextButton(onPressed: () => controller.command('snapshot'), child: const Text('Refresh Wi-Fi status')),
+        if (transfer.active || transfer.ready) TextButton(onPressed: () => ref.read(transferProvider.notifier).command('cancel'), child: const Text('Disconnect')),
       ])),
       if (ticket != null) ...[
         const SizedBox(height: 16),
         Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Text(local.listening ? 'Listening · share this invitation' : 'Opening local listener…', style: Theme.of(context).textTheme.titleMedium),
-          const Text('Expires after two minutes and can be accepted once. The host must confirm the incoming connection. Both phones must use this updated FlashLink version.'),
+          Text('Ready to connect', style: Theme.of(context).textTheme.titleMedium),
+          const Text('On the sender, tap Scan receiver QR. This invitation expires after two minutes.'),
           const SizedBox(height: 12),
           LayoutBuilder(builder: (context, constraints) => Center(child: Container(color: Colors.white, padding: const EdgeInsets.all(10),
             child: QrImageView(data: ticket['uri'] as String, size: (constraints.maxWidth - 20).clamp(80.0, 220.0), backgroundColor: Colors.white)))),
-          SelectableText(ticket['uri'] as String),
-          Text('IP / port: ${ticket['host']}:${ticket['port']}'),
-          SelectableText('Session: ${ticket['id']}'),
-          SelectableText('Fingerprint: ${ticket['fingerprint']}'),
+          TextButton.icon(onPressed: () => Clipboard.setData(ClipboardData(text: ticket['uri'] as String)), icon: const Icon(Icons.copy_rounded), label: const Text('Copy invitation')),
+          if (widget.advanced) ...[Text('${ticket['host']}:${ticket['port']}'), SelectableText(ticket['fingerprint'] as String)],
         ])),
       ],
-      const SizedBox(height: 16),
-      if (!blocked) const PairingPanel(),
-      const SectionTitle('Local FlashLink listeners'),
-      if (local.peers.isEmpty) const EmptyPanel(icon: Icons.wifi_find_rounded, title: 'No local listeners found', message: 'Open a local listener on the other phone. Some routers/hotspots block multicast or isolate clients; use an invitation link or manual pairing if discovery fails.'),
-      for (final peer in local.peers) Padding(padding: const EdgeInsets.only(bottom: 12), child: Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Text(peer['name'] as String, style: Theme.of(context).textTheme.titleMedium), Text('${peer['host']}:${peer['port']} · identity not yet confirmed'),
-        OutlinedButton(onPressed: blocked ? null : () => _connect(discovered: peer), child: const Text('Verify fingerprint & connect')),
-      ]))),
-      const SectionTitle('QR / invitation fallback'),
-      const Text('Scan with a trusted QR reader and paste its result below. FlashLink does not request camera access.'),
-      const SizedBox(height: 12),
-      TextField(controller: _link, enabled: !blocked, maxLength: 2048, minLines: 1, maxLines: 4, autocorrect: false, enableSuggestions: false,
-        decoration: const InputDecoration(labelText: 'FlashLink invitation link')),
-      FilledButton(onPressed: blocked ? null : _connect, child: const Text('Review invitation & connect')),
-      const SizedBox(height: 12),
-      ExpansionTile(title: const Text('Manual IP / port pairing'), children: [
-        const Text('Copy these public fields from the other phone’s active invitation. Expired session codes are rejected.'),
-        TextField(controller: _host, enabled: !blocked, maxLength: 15, decoration: const InputDecoration(labelText: 'Local IPv4 address')),
-        TextField(controller: _port, enabled: !blocked, maxLength: 5, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Port')),
-        TextField(controller: _session, enabled: !blocked, maxLength: 36, decoration: const InputDecoration(labelText: 'Pairing session ID')),
-        TextField(controller: _pin, enabled: !blocked, maxLength: 96, autocorrect: false, enableSuggestions: false, decoration: const InputDecoration(labelText: 'Other phone’s SHA-256 fingerprint')),
-        OutlinedButton(onPressed: blocked ? null : () => _connect(manual: true), child: const Text('Review manual connection')),
-      ]),
+      if (sending && !blocked) ...[
+        for (final peer in local.peers) Padding(padding: const EdgeInsets.only(top: 12), child: Panel(child: ListTile(
+          contentPadding: EdgeInsets.zero, title: Text(peer['name'] as String), subtitle: const Text('Receiver found · compare codes after connecting'),
+          trailing: const Icon(Icons.chevron_right_rounded), onTap: () => _connect(peer['uri'] as String)))),
+        if (local.discovering && local.peers.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Searching… If no receiver appears, scan its QR. Some hotspots block discovery.')),
+        ExpansionTile(title: const Text('Paste invitation instead'), children: [
+          TextField(controller: _link, maxLength: 2048, minLines: 1, maxLines: 4, autocorrect: false, enableSuggestions: false,
+            decoration: const InputDecoration(labelText: 'FlashLink invitation link')),
+          FilledButton(onPressed: () => _connect(_link.text), child: const Text('Connect with invitation')),
+        ]),
+      ],
     ]);
   }
 }

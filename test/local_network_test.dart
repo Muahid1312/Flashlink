@@ -14,12 +14,14 @@ class FakeLocalPlatform implements LocalPlatform {
   LocalSnapshot current = const LocalSnapshot({'revision': 0, 'available': false});
   bool fail = false;
   final calls = <String>[];
+  Map<String, Object?>? lastArguments;
   @override
   Stream<LocalSnapshot> get events => updates.stream;
   void emit(Map<Object?, Object?> values) { current = LocalSnapshot(values); updates.add(current); }
   @override
   Future<Object?> invoke(String method, [Map<String, Object?>? arguments]) async {
     calls.add(method);
+    lastArguments = arguments;
     if (fail) { throw PlatformException(code: 'LOCAL_NETWORK', message: 'Guest Wi-Fi may isolate clients. Use the same hotspot.'); }
     return method == 'snapshot' ? current.data : null;
   }
@@ -37,6 +39,14 @@ void main() {
     await Future<void>.delayed(Duration.zero);
   });
   tearDown(() async { container.dispose(); await local.updates.close(); await wifi.updates.close(); await transfer.updates.close(); });
+  test('LAN is the default without Wi-Fi Direct discovery', () {
+    expect(container.read(connectionMethodProvider), ConnectionMethod.localWifi);
+    expect(wifi.calls, isEmpty);
+  });
+  test('invitation parser rejects unrelated or duplicated fingerprints', () {
+    expect(() => LocalInvitation.parse('https://example.com'), throwsFormatException);
+    expect(() => LocalInvitation.parse('flashlink://pair?v=1&pin=${'a' * 64}&pin=${'b' * 64}'), throwsFormatException);
+  });
   test('a local interface and discovered peer never imply authentication', () {
     local.emit({'revision': 1, 'available': true, 'peers': [{'name': 'Unverified advertisement'}]});
     expect(container.read(localProvider).connected, isFalse);
@@ -69,4 +79,15 @@ void main() {
     await container.read(localProvider.notifier).command('discover');
     expect(container.read(localProvider).message, contains('isolate clients'));
   });
+  test('QR connection pins the receiver before opening native LAN and retains native errors', () async {
+    final pin = 'a' * 64;
+    final invitation = LocalInvitation.parse('flashlink://pair?v=1&pin=$pin&name=Receiver');
+    await container.read(localProvider.notifier).connectInvitation(invitation, name: 'Sender', bufferSize: 262144);
+    expect(transfer.calls.last, 'approvePairing');
+    expect(local.calls.last, 'connect');
+    expect(local.lastArguments?['invitation'], invitation.uri);
+    local.fail = true;
+    await expectLater(container.read(localProvider.notifier).connectInvitation(invitation, name: 'Sender', bufferSize: 262144), throwsA(isA<PlatformException>()));
+  });
+
 }

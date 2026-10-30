@@ -35,8 +35,8 @@ class AndroidIdentity(context: Context) {
         check(preferences.edit().putString("approved-peer",pin).commit()) { "Could not save pairing approval" }
     }
     fun forget() { check(preferences.edit().remove("approved-peer").commit()) }
-    fun tls(confirmedPeer: String? = peer): SSLContext {
-        val pin = confirmedPeer ?: error("Both users must compare and approve certificate fingerprints first")
+    fun tls(confirmedPeer: String? = peer, pairing: Boolean = false): SSLContext {
+        check(pairing || confirmedPeer != null) { "Compare and approve the receiver fingerprint first" }
         val manager = object : X509ExtendedKeyManager() {
             override fun getClientAliases(type: String?, issuers: Array<java.security.Principal>?): Array<String> = arrayOf(alias)
             override fun chooseClientAlias(types: Array<out String>?, issuers: Array<java.security.Principal>?, socket: java.net.Socket?) = alias
@@ -45,6 +45,6 @@ class AndroidIdentity(context: Context) {
             override fun getCertificateChain(selected: String?): Array<X509Certificate> = arrayOf(store.getCertificate(alias) as X509Certificate)
             override fun getPrivateKey(selected: String?): PrivateKey = store.getKey(alias,null) as PrivateKey
         }
-        return SecureTransport.context(arrayOf(manager),pin)
+        return if(pairing) SecureTransport.pairingContext(arrayOf(manager)) else SecureTransport.context(arrayOf(manager),confirmedPeer!!)
     }
 }

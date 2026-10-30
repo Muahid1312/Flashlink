@@ -1,7 +1,7 @@
 name: flashlink
 description: Offline-first direct file sharing. Authenticated, resumable offline sharing for Android.
 publish_to: none
-version: 0.1.0+2
+version: 0.1.0+3
 environment:
   sdk: '^3.12.0'
   flutter: '>=3.44.0'
@@ -14,6 +14,7 @@ dependencies:
   sqflite: ^2.4.5
   path: ^1.9.1
   qr_flutter: ^4.1.0
+  mobile_scanner: ^7.4.2
 dev_dependencies:
   flutter_test:
     sdk: flutter

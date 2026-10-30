@@ -26,12 +26,12 @@ class TransferView {
   double get fraction => phase == TransferPhase.completed ? 1 : total > 0 ? (bytes / total).clamp(0.0,1.0) : count > 0 ? completed / count : 0;
   String get label => switch(phase) {
     TransferPhase.connectionApproval => 'Incoming connection · confirm peer',
-    TransferPhase.idle => ready ? 'TCP session ready' : 'No active transfer',
+    TransferPhase.idle => secure ? 'Connected · encrypted' : ready ? 'Connecting' : 'No active transfer',
     TransferPhase.preparing => data['resuming'] == true ? 'Validating saved checkpoint' : 'Preparing files', TransferPhase.waitingForApproval => incoming ? 'Incoming transfer request' : 'Waiting for receiver approval',
     TransferPhase.paused => 'Paused · checkpoint retained', TransferPhase.interrupted => 'Interrupted · resumable data retained',
     TransferPhase.reconnecting => 'Reconnecting securely', TransferPhase.connectionLost => 'Connection lost',
     TransferPhase.finalizing => 'Saving verified files to destination',
-    TransferPhase.connecting => data['listenerReady'] == true ? 'Waiting for approved peer' : 'Opening TCP session', TransferPhase.transferring => 'Transferring', TransferPhase.verifying => 'Verifying SHA-256',
+    TransferPhase.connecting => data['listenerReady'] == true ? 'Receiver listening' : 'Connecting', TransferPhase.transferring => 'Transferring', TransferPhase.verifying => 'Verifying SHA-256',
     TransferPhase.completed => 'Completed · verified', TransferPhase.cancelled => 'Cancelled', TransferPhase.failed => 'Failed',
   };
 }

@@ -3,10 +3,13 @@ package com.flashlink.app.connection
 import android.app.Activity
 import android.content.Context
 import android.net.*
+import android.net.wifi.WifiManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Handler
 import android.os.Looper
+import android.content.Intent
+import android.provider.Settings
 import com.flashlink.app.transfer.*
 import io.flutter.plugin.common.*
 
@@ -55,15 +58,16 @@ class LocalNetworkGateway(private val activity: Activity, messenger: BinaryMesse
                 when(call.method) {
                     "snapshot" -> result.success(snapshot())
                     "discover" -> { discover(); result.success(null) }
+                    "openWifiSettings" -> { activity.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)); result.success(null) }
+                    "openHotspotSettings" -> { activity.startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)); result.success(null) }
                     "stopDiscovery" -> { stopDiscovery(); emit(); result.success(null) }
                     "startHost" -> async(result) {
                         check(!runtime.connectionBusy) { "Close the active session before opening another listener" }
                         val routes = LocalNetworks.routes(activity)
                         val address = call.argument<String>("address")
-                        val route = routes.firstOrNull { address == null || it.address == address } ?: error("Connect to Wi-Fi or enable your phone's hotspot in Android settings first")
+                        val route = LocalNetworks.hostRoute(routes,address)
                         val name = call.argument<String>("name") ?: "My FlashLink"
                         val ticket = ConnectionInvitation.create(route.address,runtime.identity.fingerprint,name)
-                        check(runtime.identity.peer != null) { "Compare and approve the other phone's certificate fingerprint first" }
                         main.post { hosting = ticket }
                         runtime.openLocal(ticket,route,true,name,call.argument<Int>("bufferSize") ?: 262144)
                         ticket.map()
@@ -97,6 +101,9 @@ class LocalNetworkGateway(private val activity: Activity, messenger: BinaryMesse
         val routes = runCatching { LocalNetworks.routes(activity) }.getOrDefault(emptyList())
         val active = runtime.connectionMethod == "localWifi"
         return mapOf("revision" to revision,"available" to routes.isNotEmpty(),"addresses" to routes.map { it.map() },
+            "networkHint" to if(routes.isNotEmpty()) null else if((activity.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager).isWifiEnabled)
+                "Wi-Fi has no local IPv4 address. Join the receiver's hotspot or your shared Wi-Fi, then refresh."
+                else "Wi-Fi disabled. Enable Wi-Fi or your phone's hotspot in Android settings, then refresh.",
             "discovering" to (discovery != null),"peers" to peers.values.filter { it.expires > System.currentTimeMillis() }.map { it.map() },
             "invitation" to hosting?.takeIf { it.expires > System.currentTimeMillis() }?.map(),
             "listening" to (active && runtime.latest["listenerReady"] == true && runtime.latest["status"] == "connecting"),
@@ -106,7 +113,7 @@ class LocalNetworkGateway(private val activity: Activity, messenger: BinaryMesse
     private fun changed() {
         if(disposed || !foreground) return
         peers.clear()
-        if(runtime.connectionMethod == "localWifi" && runtime.connectionBusy && LocalNetworks.routes(activity).isEmpty())
+        if(runtime.connectionMethod == "localWifi" && runtime.connectionBusy && LocalNetworks.routes(activity).none { it.address == runtime.latest["connectionLocalAddress"] })
             runtime.interrupt("Local Wi-Fi / hotspot disappeared. Rejoin the network and create a fresh invitation to resume.")
         emit()
     }

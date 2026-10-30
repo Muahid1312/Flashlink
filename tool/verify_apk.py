@@ -27,6 +27,7 @@ def verify(badging, mode, version, code):
                 'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE', 'android.permission.WAKE_LOCK'}
     allowed = required | {'android.permission.ACCESS_WIFI_STATE', 'android.permission.CHANGE_WIFI_STATE',
                           'android.permission.ACCESS_NETWORK_STATE', 'android.permission.NEARBY_WIFI_DEVICES',
+                          'android.permission.CAMERA',
                           'android.permission.ACCESS_COARSE_LOCATION', 'android.permission.ACCESS_FINE_LOCATION',
                           'android.permission.POST_NOTIFICATIONS', expected_id + '.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION'}
     if not required <= permissions or permissions - allowed:

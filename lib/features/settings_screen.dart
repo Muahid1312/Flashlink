@@ -4,8 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/format.dart';
 import '../core/providers.dart';
 import '../shared/widgets.dart';
-import '../domain/models.dart';
-import '../services/transfer.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -39,7 +37,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
-    final transfer = ref.watch(transferProvider);
     return PageBody(children: [
       const SizedBox(height: 20),
       Text('Make it yours.', style: Theme.of(context).textTheme.headlineLarge),
@@ -71,22 +68,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         subtitle: Text(settings.deviceName), trailing: const Icon(Icons.edit_outlined, size: 20),
         onTap: _saving ? null : _editName,
       )),
-      const SectionTitle('Transfer buffering'),
-      Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        DropdownButtonFormField<int>(key: ValueKey('buffer-${settings.transferBufferBytes}'), initialValue: settings.transferBufferBytes, isExpanded: true,
-          decoration: const InputDecoration(labelText: 'Streaming buffer'),
-          items: [for (final bytes in AppSettings.transferBuffers) DropdownMenuItem(value: bytes,
-            child: Text(bytes == 1048576 ? '1 MiB' : '${bytes ~/ 1024} KiB', maxLines: 1, overflow: TextOverflow.ellipsis))],
-          onChanged: _saving || transfer.active || transfer.ready ? null : (value) {
-            if (value != null) { _save(() => ref.read(settingsProvider.notifier).setTransferBuffer(value)); }
-          }),
-        const SizedBox(height: 12),
-        const Text('Applies to the next Wi-Fi Direct or local Wi-Fi session. Default: 256 KiB. Larger buffers are not guaranteed faster; measure with your phones. Security and integrity checks stay enabled.'),
-      ])),
-      const SectionTitle('Developer tools'),
-      Panel(child: ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.speed_rounded),
-        title: const Text('Performance diagnostics'), subtitle: const Text('Measured transfer and storage timings · local only'),
-        trailing: const Icon(Icons.chevron_right_rounded), onTap: () => context.push('/diagnostics'))),
+      const SectionTitle('Advanced'),
+      Panel(child: ListTile(contentPadding: EdgeInsets.zero, leading: const Icon(Icons.tune_rounded),
+        title: const Text('Connections & diagnostics'), subtitle: const Text('Optional Wi-Fi Direct, buffering and troubleshooting'),
+        trailing: const Icon(Icons.chevron_right_rounded), onTap: () => context.push('/nearby'))),
       const SectionTitle('Storage'),
       Panel(child: ref.watch(storageProvider).when(
         loading: () => const Text('Checking available storage…'),
@@ -103,11 +88,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       )),
       const SectionTitle('About FlashLink'),
       const Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(bool.fromEnvironment('FLASHLINK_TEST_PREVIEW') ? 'FlashLink 0.1.0 (2) · Test-signed release preview' : 'FlashLink 0.1.0 (2) · Preview', style: TextStyle(fontWeight: FontWeight.w700)),
+        Text(bool.fromEnvironment('FLASHLINK_TEST_PREVIEW') ? 'FlashLink 0.1.0 (3) · Test-signed release preview' : 'FlashLink 0.1.0 (3) · Preview', style: TextStyle(fontWeight: FontWeight.w700)),
         SizedBox(height: 12), Text('Direct sharing, thoughtfully built.'), SizedBox(height: 8),
         Text('No account. No cloud. Background transfers use a visible foreground-service notification.'),
       ])),
-      const PhaseNotice(message: 'Display names and appearance are saved locally. Wi-Fi Direct is available in Nearby. Transfers require mutual TLS authentication and receiver approval. Paused data is kept privately for validated resume.'),
+      const PhaseNotice(message: 'Display names and appearance are saved locally. Optional Wi-Fi Direct is in Advanced connections. Transfers require mutual TLS authentication and receiver approval. Paused data is kept privately for validated resume.'),
     ]);
   }
 }

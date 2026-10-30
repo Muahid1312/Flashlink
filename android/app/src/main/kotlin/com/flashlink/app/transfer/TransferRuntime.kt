@@ -66,7 +66,7 @@ class TransferRuntime private constructor(private val context: Context) {
     fun update(value: Map<String,Any?>) {
         val binding = (value["id"] as? String)?.let { jobDestinations[it] }
         val destinationForView = if(binding != null) binding.uri else destination
-        latest = value + mapOf("connectionMethod" to connectionMethod,"connectionHost" to host,"connectionPort" to port,"connectionSessionId" to lease?.invitation?.id,"choosingDestination" to (destinationRequest.get() != null),"destinationChosen" to (destinationForView != null),
+        latest = value + mapOf("connectionLocalAddress" to route?.address,"connectionMethod" to connectionMethod,"connectionHost" to host,"connectionPort" to port,"connectionSessionId" to lease?.invitation?.id,"choosingDestination" to (destinationRequest.get() != null),"destinationChosen" to (destinationForView != null),
             "destinationLabel" to destinationForView?.let { runCatching { android.provider.DocumentsContract.getTreeDocumentId(Uri.parse(it)) }.getOrDefault("Selected SAF folder") })
         val snapshot = latest
         main.post {
@@ -122,17 +122,19 @@ class TransferRuntime private constructor(private val context: Context) {
     @Synchronized fun openLocal(ticket: ConnectionInvitation, local: LocalRoute, hosting: Boolean, name: String, size: Int = 262144) {
         check(foreground && !connectionBusy) { "Close the existing connection before changing connection method" }
         ticket.validate()
-        check(identity.peer != null && (hosting || identity.peer == ticket.fingerprint)) { "Compare and approve the peer fingerprint before connecting" }
+        check(hosting || identity.peer == ticket.fingerprint) { "Compare and approve the peer fingerprint before connecting" }
         host = ticket.host; port = ticket.port; owner = hosting; route = local
         connectionMethod = "localWifi"; connectionNetwork = local.network
         invitation = ticket; lease = if(hosting) InvitationLease(ticket) else null
         beginOpen(name,size,false)
     }
     private fun beginOpen(name: String, size: Int, reconnect: Boolean) {
-        require(size in Protocol.buffers); check(identity.peer != null) { "Compare and approve BOTH certificate fingerprints first" }
+        require(size in Protocol.buffers)
+        val onboarding = owner && connectionMethod == "localWifi"
+        check(onboarding || identity.peer != null) { "Compare and approve the receiver fingerprint first" }
         peerName = name.take(32); bufferSize = size
         check(retries.take()) { "Too many connection attempts. Wait one minute before trying again." }
-        val approvedPeer = identity.peer ?: error("Approve the peer fingerprint first")
+        val approvedPeer = if(onboarding) null else identity.peer ?: error("Approve the peer fingerprint first")
         val token = ++generation
         jobDestinations.clear()
         val intent = Intent(context,TransferService::class.java)
@@ -140,7 +142,7 @@ class TransferRuntime private constructor(private val context: Context) {
         update(mapOf("status" to if(reconnect) "reconnecting" else "connecting","ready" to false,"secure" to false,"message" to "Authenticating the approved peer with mutual TLS…"))
         work.execute { connect(token,if(reconnect) 3 else 1,approvedPeer) }
     }
-    private fun connect(token: Int, attempts: Int, approvedPeer: String) {
+    private fun connect(token: Int, attempts: Int, approvedPeer: String?) {
         var last: Exception? = null
         for(attempt in 0 until attempts) {
             if(token != generation) return
@@ -153,7 +155,7 @@ class TransferRuntime private constructor(private val context: Context) {
             }
             try {
                 check(retired?.awaitQuiescent() != false && retired?.awaitReleased() != false) { "Previous file/provider or completion receipt is still closing; retry shortly" }
-                val tls = identity.tls(approvedPeer)
+                val tls = identity.tls(approvedPeer,pairing = owner && connectionMethod == "localWifi")
                 val socket = if(owner) {
                     val activeLease = lease ?: error("Pairing session missing")
                     val listener = tls.serverSocketFactory.createServerSocket() as SSLServerSocket
@@ -162,7 +164,7 @@ class TransferRuntime private constructor(private val context: Context) {
                     listener.needClientAuth = true
                     listener.bind(InetSocketAddress(InetAddress.getByName(host),port),1)
                     if(token != generation) { listener.close(); return }
-                    update(latest + mapOf("listenerReady" to true,"message" to "Listening for the approved peer. Pairing session expires in two minutes."))
+                    update(latest + mapOf("listenerReady" to true,"message" to "Receiver listening. Scan its QR on the sender; invitation expires in two minutes."))
                     var accepted: SSLSocket? = null
                     var rejects = 0
                     while(accepted == null && activeLease.remainingMillis() > 0 && token == generation) {
@@ -171,11 +173,19 @@ class TransferRuntime private constructor(private val context: Context) {
                         candidate.tcpNoDelay = true; candidate.keepAlive = true
                         try {
                             SecureTransport.authenticate(candidate)
-                            ConnectionHandshake.host(candidate,activeLease) { remoteName -> confirmConnection(token,remoteName,approvedPeer,activeLease) }
+                            val candidatePin = SecureTransport.peerFingerprint(candidate)
+                            check(approvedPeer == null || approvedPeer == candidatePin) { "Authentication failed: peer certificate changed" }
+                            var comparisonCode: String? = null
+                            ConnectionHandshake.host(candidate,activeLease,identity.fingerprint,candidatePin,{ comparisonCode = it }) { remoteName ->
+                                val acceptedPeer = confirmConnection(token,remoteName,candidatePin,activeLease,comparisonCode)
+                                if(acceptedPeer && token == generation) identity.approve(candidatePin)
+                                acceptedPeer
+                            }
                             accepted = candidate
                         } catch(e:Exception) {
                             runCatching { candidate.close() }; connecting = null
                             if(activeLease.remainingMillis() <= 0 || decision != null || ++rejects >= 5 || e !is SSLException) throw e
+                            if(token == generation) update(latest + mapOf("message" to "Authentication failed for an incoming peer. Still listening: scan this receiver's QR again.","pairingCode" to null))
                             android.util.Log.w("FlashLinkConnection","Rejected a TLS peer (${e.javaClass.simpleName}); waiting for the approved phone")
                         }
                     }
@@ -193,12 +203,16 @@ class TransferRuntime private constructor(private val context: Context) {
                     (tls.socketFactory.createSocket(raw,host,port,true) as SSLSocket).also {
                         connecting = it; rawConnecting = null
                         SecureTransport.authenticate(it)
-                        ConnectionHandshake.client(it,invitation,peerName)
+                        if(token != generation) { it.close(); throw IOException("Connection cancelled") }
+                        ConnectionHandshake.client(it,invitation,peerName,identity.fingerprint,SecureTransport.peerFingerprint(it)) { code ->
+                            if(token == generation) update(latest + mapOf("pairingCode" to code,
+                                "message" to "Compare the pairing code on both phones. Accept on the receiver only if they match."))
+                        }
                     }
                 }
                 connecting = socket
                 if(token != generation) { socket.close(); return }
-                val pin = approvedPeer
+                val pin = SecureTransport.peerFingerprint(socket)
                 authenticatedPin = pin
                 val sessionMethod = connectionMethod
                 val created = TransferSession(socket,peerName,{ manifest ->
@@ -267,7 +281,7 @@ class TransferRuntime private constructor(private val context: Context) {
             }
         }
         if(token == generation) {
-            update(latest + mapOf("status" to "connectionLost","ready" to false,"secure" to false,"message" to "Secure connection failed: ${last?.message}. Verify both fingerprints and create a fresh listener/invitation. Wi-Fi guest isolation can block local peers."))
+            update(latest + mapOf("status" to "connectionLost","ready" to false,"secure" to false,"pairingCode" to null,"listenerReady" to false,"message" to ConnectionErrors.describe(last,owner)))
             service?.stopIfIdle()
         }
     }
@@ -290,12 +304,12 @@ class TransferRuntime private constructor(private val context: Context) {
             android.util.Log.w("FlashLinkPerformance","Could not retain local diagnostics (${it.javaClass.simpleName})")
         } }
     }
-    private fun confirmConnection(token: Int, name: String, pin: String, currentLease: InvitationLease): Boolean {
+    private fun confirmConnection(token: Int, name: String, pin: String, currentLease: InvitationLease, comparisonCode: String?): Boolean {
         if(token != generation || !foreground) return false
         val pending = CompletableFuture<Boolean>(); decision = pending
         update(mapOf("status" to "connectionApproval","ready" to false,"secure" to false,
-            "peer" to name,"candidateFingerprint" to pin,"connectionRequestId" to currentLease.invitation.id,
-            "message" to "A mutually authenticated peer requests a connection. Compare the fingerprint and accept within 40 seconds. No files have been accepted."))
+            "peer" to name,"pairingCode" to comparisonCode,"candidateFingerprint" to pin,"connectionRequestId" to currentLease.invitation.id,
+            "message" to "Compare the pairing code on BOTH phones. Accept only if they match, within 40 seconds. No file metadata or file bytes have been accepted."))
         return try {
             val approved = pending.get(minOf(40_000,currentLease.remainingMillis().coerceAtLeast(1)).toLong(),TimeUnit.MILLISECONDS)
             approved && foreground && token == generation

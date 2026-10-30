@@ -9,6 +9,9 @@ import '../shared/widgets.dart';
 import 'connection_widgets.dart';
 import 'transfer_widgets.dart';
 import '../services/transfer.dart';
+import '../services/connection.dart';
+import '../services/local_network.dart';
+import 'local_connection_panel.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -25,28 +28,20 @@ class HomeScreen extends ConsumerWidget {
         const Tooltip(message: 'Offline direct file sharing', child: Icon(Icons.offline_bolt_outlined, color: Neon.secondary)),
       ])),
       const SizedBox(height: 22),
-      Text('Your files.\nNo limits on possibility.', style: theme.textTheme.headlineLarge),
+      Text('Share directly.', style: theme.textTheme.headlineLarge),
       const SizedBox(height: 12),
-      Text('A direct route from one phone to another.\nPrivate by design. Built for what’s next.',
+      Text('Between two phones. No internet needed.',
         style: TextStyle(color: theme.colorScheme.onSurfaceVariant, height: 1.6)),
       const SizedBox(height: 28),
-      LayoutBuilder(builder: (context, constraints) {
-        final cards = [
-          _ActionCard(title: 'Send files', subtitle: 'Choose what moves next', icon: Icons.north_east_rounded,
-            primary: true, onTap: () => context.push('/send')),
-          _ActionCard(title: 'Receive files', subtitle: 'Make room for more', icon: Icons.south_west_rounded,
-            onTap: () => context.push('/receive')),
-        ];
-        if (constraints.maxWidth < 360 || MediaQuery.textScalerOf(context).scale(1) > 1.3) {
-          return Column(children: [cards[0], const SizedBox(height: 14), cards[1]]);
-        }
-        return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: cards[0]), const SizedBox(width: 14), Expanded(child: cards[1])]);
-      }),
-      const SectionTitle('Your connection'),
-      const ConnectionPanel(),
+      _ActionCard(title: 'SEND', subtitle: 'Choose files & scan the receiver', icon: Icons.north_east_rounded,
+        primary: true, onTap: () => context.push('/send')),
+      const SizedBox(height: 16),
+      _ActionCard(title: 'RECEIVE', subtitle: 'Choose a folder & show your QR', icon: Icons.south_west_rounded,
+        onTap: () => context.push('/receive')),
+      const SizedBox(height: 24),
+      StatusPill(label: ref.watch(transferProvider).secure ? 'Connected · encrypted' : ref.watch(localProvider).listening ? 'Receiver listening' : 'Not connected'),
       SectionTitle('Recent transfers', trailing: TextButton(onPressed: () => context.go('/history'), child: const Text('View all'))),
       const HistoryContent(compact: true),
-      const PhaseNotice(),
     ]);
   }
 }
@@ -90,7 +85,7 @@ class SendScreen extends ConsumerWidget {
     final knownBytes = files.fold<int>(0, (total, file) => total + (file.bytes ?? 0));
     final unknown = files.any((file) => file.bytes == null);
     return Scaffold(appBar: AppBar(title: const Text('Send files')), body: SafeArea(child: PageBody(children: [
-      Text('Good things\nare worth sharing.', style: Theme.of(context).textTheme.headlineLarge),
+      Text('Choose. Connect. Send.', style: Theme.of(context).textTheme.headlineLarge),
       const SizedBox(height: 12),
       Text('Select files securely with the Android file picker.', style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
       const SizedBox(height: 24),
@@ -114,12 +109,12 @@ class SendScreen extends ConsumerWidget {
           subtitle: Text(file.bytes == null ? 'Size unavailable' : formatBytes(file.bytes!))),
       ])),
       const SectionTitle('Destination'),
-      const ConnectionPanel(),
+      if (ref.watch(effectiveConnectionMethodProvider) == ConnectionMethod.localWifi) const LocalConnectionPanel() else const ConnectionPanel(),
       const SizedBox(height: 24),
-      const TransferControls(),
+      if (ref.watch(effectiveConnectionMethodProvider) != ConnectionMethod.localWifi) const TransferControls(),
       const SizedBox(height:12),
       FilledButton(onPressed:files.isEmpty || !ref.watch(transferProvider).secure || ref.watch(transferProvider).active ? null :
-        () async { await ref.read(transferProvider.notifier).send(files); if(context.mounted) { context.push('/transfer'); } },child:const Text('Request file transfer')),
+        () async { await ref.read(transferProvider.notifier).send(files); if(context.mounted) { context.push('/transfer'); } },child:const Text('Send selected files')),
       TextButton(onPressed: () => context.push('/transfer'), child: const Text('View transfer screen')),
       const PhaseNotice(message: 'The authenticated receiver must approve the exact manifest before file bytes are sent. Pause retains private checkpoints.'),
     ])));
@@ -133,17 +128,14 @@ class ReceiveScreen extends ConsumerWidget {
     appBar: AppBar(title: const Text('Receive files')),
     body: SafeArea(child: PageBody(children: [
       const SizedBox(height: 16),
-      Text('A little closer.\nA lot more connected.', style: Theme.of(context).textTheme.headlineLarge),
+      Text('Receive files securely.', style: Theme.of(context).textTheme.headlineLarge),
       const SizedBox(height: 28),
-      const Center(child: OrbitGraphic(size: 210)),
       const SizedBox(height: 24),
       Text(ref.watch(settingsProvider).deviceName, textAlign: TextAlign.center, style: Theme.of(context).textTheme.titleLarge),
       const SizedBox(height: 12),
-      const SectionTitle('Connection'),
-      const ConnectionPanel(receiving: true),
-      const SectionTitle('Incoming transfer'),
       const TransferControls(receiving:true),
-      const PhaseNotice(),
+      const SizedBox(height: 16),
+      if (ref.watch(effectiveConnectionMethodProvider) == ConnectionMethod.localWifi) const LocalConnectionPanel(receiving: true) else const ConnectionPanel(receiving: true),
     ])),
   );
 }

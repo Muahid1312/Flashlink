@@ -1,6 +1,23 @@
 import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'transfer.dart';
+
+class LocalInvitation {
+  const LocalInvitation(this.uri, this.fingerprint, this.name);
+  final String uri;
+  final String fingerprint;
+  final String name;
+  factory LocalInvitation.parse(String text) {
+    final uri = Uri.tryParse(text.trim());
+    if (text.length > 2048 || uri == null || uri.scheme != 'flashlink' || uri.host != 'pair' ||
+        uri.queryParametersAll.values.any((v) => v.length != 1) ||
+        !RegExp(r'^[0-9a-f]{64}$').hasMatch(uri.queryParameters['pin'] ?? '') || uri.queryParameters['v'] != '1') {
+      throw const FormatException('Invalid FlashLink invitation. Scan the QR shown on the receiving phone.');
+    }
+    return LocalInvitation(uri.toString(), uri.queryParameters['pin']!, uri.queryParameters['name'] ?? 'Receiver');
+  }
+}
 
 class LocalSnapshot {
   const LocalSnapshot(this.data);
@@ -44,6 +61,14 @@ class LocalController extends Notifier<LocalSnapshot> {
     if (!_closed && next.revision >= state.revision) { state = next; }
   }
   void _error(String text) { if (!_closed) { state = LocalSnapshot({...state.data, 'message': text}); } }
+  Future<void> connectInvitation(LocalInvitation invitation, {required String name, required int bufferSize}) async {
+    if (_pending || _closed) { return; }
+    _pending = true;
+    try {
+      await ref.read(transferPlatformProvider).invoke('approvePairing', {'fingerprint': invitation.fingerprint});
+      await ref.read(localPlatformProvider).invoke('connect', {'invitation': invitation.uri, 'name': name, 'bufferSize': bufferSize});
+    } finally { _pending = false; }
+  }
   Future<void> command(String method, [Map<String, Object?>? arguments]) async {
     if (_pending || _closed) { return; }
     _pending = true;

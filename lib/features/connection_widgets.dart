@@ -5,6 +5,8 @@ import '../services/wifi_direct.dart';
 import '../services/connection.dart';
 import '../services/local_network.dart';
 import '../services/transfer.dart';
+import '../core/providers.dart';
+import '../domain/models.dart';
 import 'local_connection_panel.dart';
 import '../shared/widgets.dart';
 
@@ -50,12 +52,12 @@ class NearbyScreen extends ConsumerWidget {
     final localMode = ref.watch(effectiveConnectionMethodProvider) == ConnectionMethod.localWifi;
     return PageBody(children: [
       const SizedBox(height: 20),
-      Text('Nearby devices', style: Theme.of(context).textTheme.headlineLarge),
+      Text('Connection tools', style: Theme.of(context).textTheme.headlineLarge),
       const SizedBox(height: 10), const Text('Great connections start close by.'),
       const SizedBox(height: 24),
       const ConnectionMethodPicker(),
       const SizedBox(height: 16),
-      if (localMode) const LocalConnectionPanel()
+      if (localMode) const LocalConnectionPanel(advanced: true)
       else ...[
       Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         const Center(child: OrbitGraphic()), const SizedBox(height: 16),
@@ -98,6 +100,9 @@ class NearbyScreen extends ConsumerWidget {
       ]))),
       ],
       if (transfer.phase == TransferPhase.connectionApproval) const IncomingConnectionPanel(),
+      const SectionTitle('Streaming buffer'),
+      const _BufferSetting(),
+      TextButton(onPressed: () => context.push('/diagnostics'), child: const Text('Performance diagnostics')),
       const PhaseNotice(message: 'Android handles pairing confirmation. Your FlashLink display name does not change the Android Wi-Fi Direct device name. File transfers require a TCP handshake and explicit receiver approval.'),
     ]);
   }
@@ -134,11 +139,31 @@ class IncomingConnectionPanel extends ConsumerWidget {
     return Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Text('Allow this connection?', style: Theme.of(context).textTheme.titleMedium),
       Text('Peer: ${state.data['peer'] ?? 'Approved peer'}'),
-      SelectableText(state.data['candidateFingerprint'] as String? ?? ''),
+      if (state.data['pairingCode'] != null) Text(state.data['pairingCode'].toString(), style: Theme.of(context).textTheme.headlineLarge),
+      ExpansionTile(title: const Text('Sender fingerprint'), children: [SelectableText(state.data['candidateFingerprint'] as String? ?? '')]),
       Text('Session: ${state.data['connectionRequestId'] ?? ''}'),
-      const Text('The certificate matches your prior approval. Compare it with the other phone and answer within 40 seconds. File requests still require separate approval.'),
-      FilledButton(onPressed: () => ref.read(transferProvider.notifier).command('confirmConnection', {'id': state.data['connectionRequestId'], 'accept': true}), child: const Text('Accept connection')),
+      const Text('Compare the six-digit code with the sender’s screen. Accept only if BOTH codes match. Each file request needs separate approval.'),
+      FilledButton(onPressed: () => ref.read(transferProvider.notifier).command('confirmConnection', {'id': state.data['connectionRequestId'], 'accept': true}), child: const Text('Codes match · accept')),
       TextButton(onPressed: () => ref.read(transferProvider.notifier).command('confirmConnection', {'id': state.data['connectionRequestId'], 'accept': false}), child: const Text('Reject connection')),
     ]));
+  }
+}
+
+class _BufferSetting extends ConsumerWidget {
+  const _BufferSetting();
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final settings = ref.watch(settingsProvider);
+    final transfer = ref.watch(transferProvider);
+    return Panel(child: DropdownButtonFormField<int>(
+      key: ValueKey(settings.transferBufferBytes), initialValue: settings.transferBufferBytes, isExpanded: true,
+      decoration: const InputDecoration(labelText: 'Streaming buffer · default 256 KiB'),
+      items: [for (final bytes in AppSettings.transferBuffers) DropdownMenuItem(value: bytes, child: Text('${bytes ~/ 1024} KiB'))],
+      onChanged: transfer.active || transfer.ready ? null : (value) async {
+        if (value == null) { return; }
+        try { await ref.read(settingsProvider.notifier).setTransferBuffer(value); }
+        catch (_) { if (context.mounted) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Buffer setting could not be saved.'))); } }
+      },
+    ));
   }
 }

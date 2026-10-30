@@ -48,11 +48,11 @@ void main() {
   testWidgets('home routes to send, picker entry and disabled transfer controls', (tester) async {
     await launch(tester);
     expect(find.text('FlashLink'), findsOneWidget);
-    await tester.tap(find.text('Send files'));
+    await tester.tap(find.text('SEND'));
     await tester.pumpAndSettle();
     expect(find.text('Choose files'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Request file transfer'), 300, scrollable: find.byType(Scrollable).last);
-    final button = tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Request file transfer'));
+    await tester.scrollUntilVisible(find.text('Send selected files'), 300, scrollable: find.byType(Scrollable).last);
+    final button = tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Send selected files'));
     expect(button.onPressed, isNull);
     await tester.ensureVisible(find.text('View transfer screen'));
     await tester.tap(find.text('View transfer screen'));
@@ -92,26 +92,32 @@ void main() {
     expect(find.text('Kitchen Pixel'), findsOneWidget);
   });
 
-  testWidgets('receive and nearby advertise unavailable states', (tester) async {
+  testWidgets('receiver needs no Wi-Fi Direct permission; optional Direct stays in advanced', (tester) async {
     final container = await launch(tester);
     container.read(routerProvider).go('/receive');
     await tester.pumpAndSettle();
-    expect(find.text('Manage nearby devices →'), findsOneWidget);
+    expect(find.text('Start receiving'), findsOneWidget);
+    expect(find.text('Scan receiver QR'), findsNothing);
+    expect(find.text('Allow discovery access'), findsNothing);
     container.read(routerProvider).go('/nearby');
+    await tester.pumpAndSettle();
+    expect(find.text('Connection method'), findsOneWidget);
+    container.read(connectionMethodProvider.notifier).select(ConnectionMethod.wifiDirect);
     await tester.pumpAndSettle();
     expect(find.text('Permission required'), findsOneWidget);
     expect(find.text('No devices to show'), findsOneWidget);
   });
-  testWidgets('local pairing controls remain usable on a narrow phone with large text', (tester) async {
+  testWidgets('sender uses LAN by default with QR and an optional invitation fallback', (tester) async {
     final container = await launch(tester, size: const Size(320, 800), textScale: 1.4);
-    container.read(connectionMethodProvider.notifier).select(ConnectionMethod.localWifi);
-    container.read(routerProvider).go('/nearby');
+    container.read(routerProvider).go('/send');
     await tester.pumpAndSettle();
-    expect(find.text('Host a local connection'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Manual IP / port pairing'), 300, scrollable: find.byType(Scrollable).last);
-    await tester.tap(find.text('Manual IP / port pairing'));
+    expect(find.text('Scan receiver QR'), findsOneWidget);
+    expect(find.text('Start receiving'), findsNothing);
+    expect(find.text('Connection method'), findsNothing);
+    await tester.scrollUntilVisible(find.text('Paste invitation instead'), 300, scrollable: find.byType(Scrollable).last);
+    await tester.tap(find.text('Paste invitation instead'));
     await tester.pumpAndSettle();
-    expect(find.text('Review manual connection'), findsOneWidget);
+    expect(find.text('Connect with invitation'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
