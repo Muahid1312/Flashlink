@@ -45,4 +45,22 @@ void main() {
     expect(repository.read().theme, ThemeMode.system);
     expect(repository.read().deviceName, 'My FlashLink');
   });
+  test('supported streaming buffers persist alongside concurrent appearance changes', () async {
+    final controller = container.read(settingsProvider.notifier);
+    for (final bytes in [65536, 262144, 1048576]) {
+      await Future.wait([controller.setTransferBuffer(bytes), controller.setTheme(ThemeMode.dark), controller.setName('Pixel')]);
+      expect(repository.read().transferBufferBytes, bytes);
+      expect(repository.read().theme, ThemeMode.dark);
+      expect(repository.read().deviceName, 'Pixel');
+    }
+    expect(() => controller.setTransferBuffer(12), throwsArgumentError);
+  });
+  test('older and malformed buffer preferences use the safe 256 KiB default', () async {
+    final preferences = await SharedPreferences.getInstance();
+    for (final raw in ['{"deviceName":"Existing"}', '{"transferBufferBytes":12}', '{"transferBufferBytes":"1048576"}']) {
+      await preferences.setString('flashlink.settings.v1', raw);
+      expect(repository.read().transferBufferBytes, 262144);
+    }
+  });
+
 }

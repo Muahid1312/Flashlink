@@ -5,6 +5,7 @@ import android.database.sqlite.*
 import android.net.Uri
 import android.os.StatFs
 import android.provider.DocumentsContract
+import android.webkit.MimeTypeMap
 import org.json.JSONArray
 import java.io.*
 import java.security.MessageDigest
@@ -52,6 +53,12 @@ class TransferLedger(val context: Context) : SQLiteOpenHelper(context,"flashlink
             put("status","waitingForApproval"); put("updated",System.currentTimeMillis())
         }
         writableDatabase.insertOrThrow("resume_jobs",null,values)
+    }
+    /** Only the exact, still-unapproved incoming manifest may acquire a newly chosen folder. */
+    @Synchronized fun chooseDestination(id: String, uri: String): Boolean {
+        Protocol.validId(id)
+        val values = ContentValues().apply { put("destination",uri); put("updated",System.currentTimeMillis()) }
+        return writableDatabase.update("resume_jobs",values,"id=? AND direction='received' AND status='waitingForApproval' AND approved=0 AND deleted=0",arrayOf(id)) == 1
     }
     fun approve(id: String) { writableDatabase.execSQL("UPDATE resume_jobs SET approved=1,updated=? WHERE id=?",arrayOf<Any?>(System.currentTimeMillis(),id)) }
     fun matches(manifest: Manifest, peer: String): Saved? {
@@ -164,15 +171,35 @@ class TransferLedger(val context: Context) : SQLiteOpenHelper(context,"flashlink
                 (if(grant.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)) }
         }
     }
-    @Synchronized fun cancelSaved(id: String, delete: Boolean) {
-        val saved = load(id) ?: return
-        if(receipt(id) && !delete) return
-        File(context.filesDir,"transfer-parts/$id").deleteRecursively()
-        // Keep a minimal UUID tombstone; deleting history must not permit approval replay.
-        writableDatabase.execSQL("UPDATE resume_jobs SET status='cancelled',sources='[]',destination=NULL,approved=0,deleted=? WHERE id=?",arrayOf<Any?>(if(delete) 1 else 0,id))
-        writableDatabase.execSQL(if(delete) "DELETE FROM transfer_sessions WHERE id=?" else "UPDATE transfer_sessions SET status='cancelled',verified=0 WHERE id=?",arrayOf<Any?>(id))
-        releaseUnused(saved.sources + listOfNotNull(saved.destination))
+    fun cancelSaved(id: String, delete: Boolean): Boolean {
+        val cleanup = synchronized(this) {
+            val saved = load(id) ?: return true
+            val completed = receipt(id)
+            if(completed && !delete) return true
+            val exports = if(completed) emptyList() else readableDatabase.rawQuery("SELECT export_uri FROM resume_files WHERE job=? AND export_uri IS NOT NULL",arrayOf(id)).use { c ->
+                buildList { while(c.moveToNext()) add(c.getString(0)) }
+            }
+            val db = writableDatabase; db.beginTransaction()
+            try {
+                // Keep a UUID tombstone, and never remove completed destination documents.
+                db.execSQL("UPDATE resume_jobs SET status='cancelled',sources='[]',destination=NULL,approved=0,deleted=? WHERE id=?",arrayOf<Any?>(if(delete) 1 else 0,id))
+                db.execSQL(if(delete) "DELETE FROM transfer_sessions WHERE id=?" else "UPDATE transfer_sessions SET status='cancelled',verified=0 WHERE id=?",arrayOf<Any?>(id))
+                db.setTransactionSuccessful()
+            } finally { db.endTransaction() }
+            saved to exports
+        }
+        // Slow/revoked SAF providers must not hold the ledger monitor during another transfer's checkpoint.
+        var success = true
+        for(value in cleanup.second) {
+            try { if(!DocumentsContract.deleteDocument(context.contentResolver,Uri.parse(value))) success = false }
+            catch(_:FileNotFoundException) { /* An earlier cancellation cleanup already deleted it. */ }
+            catch(_:Exception) { success = false }
+        }
+        if(!File(context.filesDir,"transfer-parts/$id").deleteRecursively()) success = false
+        releaseUnused(cleanup.first.sources + listOfNotNull(cleanup.first.destination))
+        return success
     }
+
 }
 
 class PrivateReceiveStore(private val ledger: TransferLedger, private val saved: TransferLedger.Saved) : ReceiveStore {
@@ -247,6 +274,7 @@ class PrivateReceiveStore(private val ledger: TransferLedger, private val saved:
         val resolver = ledger.context.contentResolver
         val tree = Uri.parse(saved.destination ?: error("Destination is missing"))
         val parent = DocumentsContract.buildDocumentUriUsingTree(tree,DocumentsContract.getTreeDocumentId(tree))
+        val buffer = ByteArray(262144)
         for(file in manifest.files) {
             check(!cancelled.get()) { "Export cancelled" }
             // Persist newly-created URIs before copying, so interruption can safely clean or retry export.
@@ -254,18 +282,17 @@ class PrivateReceiveStore(private val ledger: TransferLedger, private val saved:
             if(old != null) check(DocumentsContract.deleteDocument(resolver,Uri.parse(old))) { "Old interrupted export cannot be removed" }
             val uri = synchronized(this) {
                 check(!cancelled.get())
-                (DocumentsContract.createDocument(resolver,parent,"application/octet-stream",".${file.id}.part") ?: error("Cannot create destination")).also {
+                (DocumentsContract.createDocument(resolver,parent,file.mime.takeIf { it.matches(Regex("[A-Za-z0-9!#$&^_.+\\-]+/[A-Za-z0-9!#$&^_.+\\-]+")) }
+                    ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.name.substringAfterLast('.',"").lowercase()) ?: "application/octet-stream",".${file.id}.part") ?: error("Cannot create destination")).also {
                     ledger.writableDatabase.execSQL("UPDATE resume_files SET export_uri=? WHERE job=? AND id=?",arrayOf(it.toString(),manifest.id,file.id))
                 }
             }
             resolver.openOutputStream(uri,"w")!!.use { output ->
                 exporting = output
                 FileInputStream(ledger.file(manifest.id,file.id)).use { input ->
-                    val buffer = ByteArray(262144)
-                    while(true) {
-                        check(!cancelled.get()) { "Export cancelled" }
-                        val n = input.read(buffer); if(n < 0) break
-                        output.write(buffer,0,n); finalized += n; progress(finalized)
+                    val before = finalized
+                    FileValidation.copyVerified(input,output,file,buffer,cancelled={ cancelled.get() }) { copied ->
+                        finalized = Math.addExact(before,copied); progress(finalized)
                     }
                 }
             }

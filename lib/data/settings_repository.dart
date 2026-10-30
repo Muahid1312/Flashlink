@@ -15,8 +15,9 @@ class SettingsRepository {
       final data = jsonDecode(encoded) as Map<String, dynamic>;
       final theme = ThemeMode.values.where((mode) => mode.name == data['theme']).firstOrNull ?? ThemeMode.system;
       final name = data['deviceName'];
+      final buffer = data['transferBufferBytes'];
       return AppSettings(theme: theme, deviceName: name is String && name.trim().isNotEmpty && name.runes.length <= 32
-        ? name.trim() : 'My FlashLink');
+        ? name.trim() : 'My FlashLink', transferBufferBytes: buffer is int && AppSettings.transferBuffers.contains(buffer) ? buffer : 262144);
     } on FormatException {
       return const AppSettings();
     } on TypeError {
@@ -27,7 +28,7 @@ class SettingsRepository {
   Future<void> write(AppSettings settings) async {
     // One preference prevents partial theme/name updates if a write fails.
     final saved = await preferences.setString(_key, jsonEncode({
-      'theme': settings.theme.name, 'deviceName': settings.deviceName,
+      'theme': settings.theme.name, 'deviceName': settings.deviceName, 'transferBufferBytes': settings.transferBufferBytes,
     }));
     if (!saved) throw StateError('Could not save settings');
   }

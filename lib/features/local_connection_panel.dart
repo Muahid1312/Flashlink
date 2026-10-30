@@ -45,7 +45,7 @@ class _LocalConnectionPanelState extends ConsumerState<LocalConnectionPanel> {
     try {
       await ref.read(transferPlatformProvider).invoke('approvePairing', {'fingerprint': fingerprint});
       ref.invalidate(pairingProvider);
-      final arguments = <String, Object?>{'name': ref.read(settingsProvider).deviceName};
+      final arguments = <String, Object?>{'name': ref.read(settingsProvider).deviceName, 'bufferSize': ref.read(settingsProvider).transferBufferBytes};
       if (manual) {
         arguments.addAll({'host': _host.text.trim(), 'port': int.parse(_port.text), 'id': _session.text.trim(), 'fingerprint': fingerprint});
       } else { arguments['invitation'] = invitation; }
@@ -83,7 +83,7 @@ class _LocalConnectionPanelState extends ConsumerState<LocalConnectionPanel> {
             onChanged: blocked ? null : (value) => setState(() => _address = value)),
         ],
         const SizedBox(height: 12),
-        FilledButton.icon(onPressed: blocked || !local.available ? null : () => controller.command('startHost', {'name': ref.read(settingsProvider).deviceName, 'address': chosen}),
+        FilledButton.icon(onPressed: blocked || !local.available ? null : () => controller.command('startHost', {'name': ref.read(settingsProvider).deviceName, 'address': chosen, 'bufferSize': ref.read(settingsProvider).transferBufferBytes}),
           icon: const Icon(Icons.qr_code_rounded), label: const Text('Host a local connection')),
         OutlinedButton(onPressed: blocked || !local.available ? null : () => controller.command(local.discovering ? 'stopDiscovery' : 'discover'),
           child: Text(local.discovering ? 'Stop local search' : 'Find FlashLink on local Wi-Fi')),

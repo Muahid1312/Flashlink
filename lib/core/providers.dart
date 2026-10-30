@@ -16,6 +16,10 @@ class SettingsController extends Notifier<AppSettings> {
   Future<void> _pending = Future<void>.value();
 
   Future<void> setTheme(ThemeMode theme) => _enqueue(() => state.copyWith(theme: theme));
+  Future<void> setTransferBuffer(int bytes) {
+    if (!AppSettings.transferBuffers.contains(bytes)) throw ArgumentError('Choose a supported transfer buffer size.');
+    return _enqueue(() => state.copyWith(transferBufferBytes: bytes));
+  }
   Future<void> setName(String name) {
     final clean = name.trim();
     if (clean.isEmpty || clean.runes.length > 32) {

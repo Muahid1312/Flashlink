@@ -12,6 +12,8 @@ class TransferView {
   bool get secure => ready && data['secure'] == true;
   bool get ready => data['ready'] == true;
   bool get destinationChosen => data['destinationChosen'] == true;
+  bool get choosingDestination => data['choosingDestination'] == true;
+  bool get canChooseDestination => !choosingDestination && (!active || incoming);
   bool get active => const [TransferPhase.connectionApproval, TransferPhase.preparing, TransferPhase.waitingForApproval, TransferPhase.connecting, TransferPhase.reconnecting, TransferPhase.transferring, TransferPhase.verifying, TransferPhase.finalizing].contains(phase);
   bool get incoming => data['direction'] == 'received' && phase == TransferPhase.waitingForApproval;
   int get bytes => (data['bytes'] as num?)?.toInt() ?? 0;
@@ -70,7 +72,7 @@ class TransferController extends Notifier<TransferView> {
     if(method == 'send' && (state.active || !state.secure)) return;
     if(const ['resume','retry'].contains(method) && (!state.secure || state.active)) return;
     if(method == 'pause' && !const [TransferPhase.transferring,TransferPhase.verifying].contains(state.phase)) return;
-    if(method == 'accept' && (!state.incoming || !state.destinationChosen || !state.secure)) return;
+    if(method == 'accept' && (!state.incoming || !state.destinationChosen || state.choosingDestination || !state.secure)) return;
     _pending = true;
     try {
       final result = await ref.read(transferPlatformProvider).invoke(method,arguments);
@@ -81,8 +83,8 @@ class TransferController extends Notifier<TransferView> {
     catch (_) { _error('Transfer operation unavailable. Retry on an Android device.'); }
     finally { _pending = false; }
   }
-  Future<void> openSession() => command('openSession',{'name': ref.read(settingsProvider).deviceName,'bufferSize':262144});
-  Future<void> reconnect() => command('reconnect',{'name': ref.read(settingsProvider).deviceName});
+  Future<void> openSession() => command('openSession',{'name': ref.read(settingsProvider).deviceName,'bufferSize':ref.read(settingsProvider).transferBufferBytes});
+  Future<void> reconnect() => command('reconnect',{'name': ref.read(settingsProvider).deviceName,'bufferSize':ref.read(settingsProvider).transferBufferBytes});
   Future<void> resume(String id) => command('resume',{'id':id});
   Future<void> send(List<SharedFile> files) => command('send',{'files': files.map((file) => {'uri':file.uri}).toList()});
   Future<void> accept() => command('accept',{'id':state.data['id']});

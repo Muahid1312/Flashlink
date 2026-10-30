@@ -23,9 +23,9 @@ class TransferControls extends ConsumerWidget {
       if(transfer.secure) const StatusPill(label:'Authenticated · TLS',icon:Icons.verified_user_outlined),
       if(transfer.secure && transfer.data['authenticatedPeerFingerprint'] != null) ExpansionTile(title:const Text('Authenticated peer fingerprint'),children:[SelectableText(transfer.data['authenticatedPeerFingerprint'].toString())]), const SizedBox(height:12),
       if(transfer.data['message'] != null) Text(transfer.data['message'].toString()),
-      if(receiving) ...[
+      if(receiving && !transfer.incoming) ...[
         Text(transfer.destinationChosen ? 'Destination folder selected' : 'Choose the folder where approved files will be saved.'),
-        TextButton(onPressed:transfer.active || transfer.ready ? null : () => controller.command('chooseDestination'),child:const Text('Choose destination folder')),
+        TextButton(onPressed:transfer.canChooseDestination ? () => controller.command('chooseDestination') : null,child:Text(transfer.choosingDestination ? 'Choosing folder…' : 'Choose destination folder')),
       ],
       if(!transfer.ready && !transfer.active) const Padding(padding:EdgeInsets.symmetric(vertical:16),child:PairingPanel()),
       if (transfer.phase == TransferPhase.connectionApproval) const IncomingConnectionPanel(),
@@ -33,16 +33,7 @@ class TransferControls extends ConsumerWidget {
       if(!localMode && !transfer.ready) FilledButton(onPressed:!wifi.connected || transfer.active || (receiving && !transfer.destinationChosen) ? null : controller.openSession,
         child:Text(wifi.group?['isGroupOwner'] == true ? 'Open TCP listener' : 'Connect TCP session')),
       if(!localMode && !transfer.ready && !transfer.active && wifi.connected) TextButton(onPressed:controller.reconnect,child:const Text('Retry secure connection · up to 3 attempts')),
-      if(transfer.incoming) ...[
-        Text('Authenticated peer: ${transfer.data['peer'] ?? 'Connected device'}',style:Theme.of(context).textTheme.titleMedium),
-        Text('${transfer.count} files · ${formatBytes(transfer.total)}'),
-        Text('Destination: ${transfer.data['destinationLabel'] ?? 'No folder selected'}'),
-        for(final item in transfer.data['files'] as List? ?? const []) Text((item as Map)['name'].toString()),
-        const SizedBox(height:12),
-        FilledButton(onPressed:transfer.destinationChosen ? controller.accept : null,child:const Text('Accept files')),
-        TextButton(onPressed:controller.reject,child:const Text('Reject')),
-        if(!transfer.destinationChosen) const Text('No destination was selected. Reject, choose a folder, then reopen the session.'),
-      ],
+      if(transfer.incoming) const IncomingFilesPanel(),
       if(transfer.active || transfer.phase == TransferPhase.completed) TextButton(onPressed:() => context.push('/transfer'),child:const Text('View transfer progress')),
       if(transfer.ready || transfer.active) OutlinedButton(onPressed:() => controller.command('cancel'),child:Text(transfer.active ? 'Cancel transfer' : 'Close TCP session')),
       TextButton(onPressed:() => controller.command('notificationPermission'),child:const Text('Allow transfer notifications')),
@@ -71,6 +62,10 @@ class TransferScreen extends ConsumerWidget {
       ]))),
       const SizedBox(height:28),
       Panel(child:Column(crossAxisAlignment:CrossAxisAlignment.stretch,children:[
+        if (state.phase == TransferPhase.preparing && state.data['preparingBytes'] != null) ...[
+          Text('Preparing: ${state.data['preparingFile'] ?? 'selected files'}'),
+          Text('${formatBytes((state.data['preparingBytes'] as num).toInt())} source bytes checked · ${state.data['preparedFiles'] ?? 0} / ${state.count} files prepared'),
+        ],
         Text('${formatBytes(state.bytes)} / ${formatBytes(state.total)}',style:Theme.of(context).textTheme.titleLarge),
         Text('${state.completed} / ${state.count} files verified'),
         if(state.phase == TransferPhase.finalizing && state.data['finalizedBytes'] != null) Text('Saved to destination: ${formatBytes((state.data['finalizedBytes'] as num).toInt())}'),
@@ -83,6 +78,7 @@ class TransferScreen extends ConsumerWidget {
       ])),
       const SizedBox(height:24),
       if (state.phase == TransferPhase.connectionApproval) const IncomingConnectionPanel(),
+      if (state.incoming) const IncomingFilesPanel(),
       if(state.active) FilledButton.icon(onPressed:() => ref.read(transferProvider.notifier).command('cancel'),icon:const Icon(Icons.close_rounded),label:const Text('Cancel transfer')),
       if(const [TransferPhase.transferring,TransferPhase.verifying].contains(state.phase)) OutlinedButton(onPressed:() => ref.read(transferProvider.notifier).command('pause'),child:const Text('Pause at checkpoint')),
       if(const [TransferPhase.paused,TransferPhase.interrupted,TransferPhase.failed].contains(state.phase)) TextButton(onPressed:() => context.go('/history'),child:const Text('Open saved transfers to resume')),
@@ -90,5 +86,28 @@ class TransferScreen extends ConsumerWidget {
       if(state.secure) const StatusPill(label:'Authenticated · TLS',icon:Icons.verified_user_outlined),
       const PhaseNotice(message:'Progress counts real streamed bytes. Interrupted/paused data stays private at durable checkpoints; Cancel removes partial data. Completion requires SHA-256 verification and receiver acknowledgement. Resume requires the same authenticated peer and approved manifest.'),
     ])));
+  }
+}
+
+class IncomingFilesPanel extends ConsumerWidget {
+  const IncomingFilesPanel({super.key});
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final transfer = ref.watch(transferProvider);
+    final controller = ref.read(transferProvider.notifier);
+    return Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Text('Review incoming files', style: Theme.of(context).textTheme.titleMedium),
+      Text('Authenticated peer: ${transfer.data['peer'] ?? 'Connected device'}'),
+      Text('${transfer.count} files · ${formatBytes(transfer.total)}'),
+      Text('Destination: ${transfer.data['destinationLabel'] ?? 'Choose a folder below'}'),
+      for (final item in transfer.data['files'] as List? ?? const [])
+        ListTile(contentPadding: EdgeInsets.zero, title: Text((item as Map)['name'].toString()),
+          subtitle: Text('${formatBytes((item['size'] as num).toInt())} · ${item['mime']}')),
+      TextButton(onPressed: transfer.canChooseDestination ? () => controller.command('chooseDestination') : null,
+        child: Text(transfer.choosingDestination ? 'Choosing folder…' : 'Choose destination folder')),
+      const Text('No file bytes are accepted until you approve this exact request. Folder selection alone does not approve it.'),
+      FilledButton(onPressed: transfer.secure && transfer.destinationChosen && !transfer.choosingDestination ? controller.accept : null, child: const Text('Accept files')),
+      TextButton(onPressed: controller.reject, child: const Text('Reject')),
+    ]));
   }
 }

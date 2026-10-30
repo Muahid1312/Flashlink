@@ -17,6 +17,7 @@ class TransferBridge(private val activity: Activity, messenger: BinaryMessenger,
     private val main = Handler(Looper.getMainLooper())
     private var sink: EventChannel.EventSink? = null
     private var folder: MethodChannel.Result? = null
+    private var folderRequest: TransferRuntime.DestinationRequest? = null
     private var disposed = false
     private val listener: (Map<String,Any?>)->Unit = { state -> if(!disposed) sink?.success(state) }
     init {
@@ -28,11 +29,16 @@ class TransferBridge(private val activity: Activity, messenger: BinaryMessenger,
                     "approvePairing" -> async(result) { check(runtime.latest["ready"] != true && runtime.latest["status"] !in TransferRuntime.ACTIVE); runtime.identity.approve(call.argument<String>("fingerprint") ?: ""); runtime.pairing() }
                     "forgetPairing" -> async(result) { check(runtime.latest["ready"] != true && runtime.latest["status"] !in TransferRuntime.ACTIVE); runtime.identity.forget(); runtime.pairing() }
                     "chooseDestination" -> {
-                        check(folder == null && runtime.latest["status"] !in TransferRuntime.ACTIVE)
-                        folder = result
-                        activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-                        },FOLDER)
+                        check(folder == null) { "A folder picker is already open" }
+                        val request = runtime.beginDestinationSelection()
+                        folder = result; folderRequest = request
+                        try {
+                            activity.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                            },FOLDER)
+                        } catch(error:Exception) {
+                            folder = null; folderRequest = null; runtime.finishDestinationSelection(request); throw error
+                        }
                     }
                     "notificationPermission" -> {
                         if(Build.VERSION.SDK_INT >= 33 && activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
@@ -65,16 +71,20 @@ class TransferBridge(private val activity: Activity, messenger: BinaryMessenger,
     fun onActivityResult(requestCode: Int,resultCode: Int,data: Intent?): Boolean {
         if(requestCode != FOLDER) return false
         val result = folder ?: return true; folder = null
+        val request = folderRequest ?: return true; folderRequest = null
         try {
             if(resultCode == Activity.RESULT_OK) {
                 val uri = data?.data ?: error("No folder selected")
                 val flags = data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                 require(flags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION != 0)
                 activity.contentResolver.takePersistableUriPermission(uri,flags)
-                runtime.destination(uri)
-            }
-            result.success(null)
-        } catch(e:Exception) { result.error("FOLDER",e.message,null) }
+                async(result) {
+                    try { runtime.destination(uri,request); null }
+                    catch(error:Exception) { runtime.ledger.releaseUnused(listOf(uri.toString())); throw error }
+                    finally { runtime.finishDestinationSelection(request) }
+                }
+            } else { runtime.finishDestinationSelection(request); result.success(null) }
+        } catch(e:Exception) { runtime.finishDestinationSelection(request); result.error("FOLDER",e.message,null) }
         return true
     }
     fun connectionChanged(state: Map<String,Any?>) {
@@ -86,6 +96,7 @@ class TransferBridge(private val activity: Activity, messenger: BinaryMessenger,
     override fun onCancel(arguments: Any?) { runtime.listeners.remove(listener); sink = null }
     fun dispose() {
         disposed = true; runtime.listeners.remove(listener); sink = null
+        folderRequest?.let { runtime.finishDestinationSelection(it) }; folderRequest = null
         folder?.error("CLOSED","Activity recreated; retry choosing a folder",null); folder = null
         methods.setMethodCallHandler(null); events.setStreamHandler(null)
     }

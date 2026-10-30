@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/format.dart';
 import '../core/providers.dart';
 import '../shared/widgets.dart';
+import '../domain/models.dart';
+import '../services/transfer.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -36,6 +38,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
+    final transfer = ref.watch(transferProvider);
     return PageBody(children: [
       const SizedBox(height: 20),
       Text('Make it yours.', style: Theme.of(context).textTheme.headlineLarge),
@@ -67,6 +70,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         subtitle: Text(settings.deviceName), trailing: const Icon(Icons.edit_outlined, size: 20),
         onTap: _saving ? null : _editName,
       )),
+      const SectionTitle('Transfer buffering'),
+      Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        DropdownButtonFormField<int>(key: ValueKey('buffer-${settings.transferBufferBytes}'), initialValue: settings.transferBufferBytes, isExpanded: true,
+          decoration: const InputDecoration(labelText: 'Streaming buffer'),
+          items: [for (final bytes in AppSettings.transferBuffers) DropdownMenuItem(value: bytes,
+            child: Text(bytes == 1048576 ? '1 MiB' : '${bytes ~/ 1024} KiB', maxLines: 1, overflow: TextOverflow.ellipsis))],
+          onChanged: _saving || transfer.active || transfer.ready ? null : (value) {
+            if (value != null) _save(() => ref.read(settingsProvider.notifier).setTransferBuffer(value));
+          }),
+        const SizedBox(height: 12),
+        const Text('Applies to the next Wi-Fi Direct or local Wi-Fi session. Default: 256 KiB. Larger buffers are not guaranteed faster; measure with your phones. Security and integrity checks stay enabled.'),
+      ])),
       const SectionTitle('Storage'),
       Panel(child: ref.watch(storageProvider).when(
         loading: () => const Text('Checking available storage…'),

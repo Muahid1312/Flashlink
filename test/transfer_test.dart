@@ -89,4 +89,20 @@ void main() {
     platform.emit({'status':'cancelled','ready':false}); await container.read(transferProvider.notifier).send([]);
     expect(platform.calls,['snapshot']);
   });
+  test('an authenticated incoming request can choose a folder without approving files', () async {
+    platform.emit({'status':'waitingForApproval','direction':'received','ready':true,'secure':true,'id':'incoming'});
+    expect(container.read(transferProvider).canChooseDestination, isTrue);
+    await container.read(transferProvider.notifier).command('chooseDestination');
+    expect(platform.calls.last, 'chooseDestination');
+    await container.read(transferProvider.notifier).accept();
+    expect(platform.calls.where((method) => method == 'accept'), isEmpty);
+    platform.emit({...platform.current.data,'destinationChosen':true,'choosingDestination':true});
+    expect(container.read(transferProvider).canChooseDestination, isFalse);
+    await container.read(transferProvider.notifier).accept();
+    expect(platform.calls.where((method) => method == 'accept'), isEmpty);
+    platform.emit({...platform.current.data,'choosingDestination':false});
+    await container.read(transferProvider.notifier).accept();
+    expect(platform.calls.last, 'accept');
+  });
+
 }

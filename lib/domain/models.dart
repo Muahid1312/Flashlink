@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 
 class AppSettings {
-  const AppSettings({this.theme = ThemeMode.system, this.deviceName = 'My FlashLink'});
+  const AppSettings({this.theme = ThemeMode.system, this.deviceName = 'My FlashLink', this.transferBufferBytes = 262144});
   final ThemeMode theme;
   final String deviceName;
+  final int transferBufferBytes;
+  static const transferBuffers = [65536, 262144, 1048576];
 
-  AppSettings copyWith({ThemeMode? theme, String? deviceName}) => AppSettings(
+  AppSettings copyWith({ThemeMode? theme, String? deviceName, int? transferBufferBytes}) => AppSettings(
     theme: theme ?? this.theme,
     deviceName: deviceName ?? this.deviceName,
+    transferBufferBytes: transferBufferBytes ?? this.transferBufferBytes,
   );
 }
 

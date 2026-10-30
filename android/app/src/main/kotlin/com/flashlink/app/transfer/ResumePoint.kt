@@ -42,6 +42,23 @@ object FileValidation {
         require(MessageDigest.isEqual(result.first,source.meta.sha256)) { "Source content changed; this transfer cannot resume" }
         if(prefix != null) require(MessageDigest.isEqual(result.second,prefix)) { "Receiver checkpoint does not match the source" }
     }
+    /** Recheck the exact staging bytes while saving, before the temporary document is renamed. */
+    fun copyVerified(input: InputStream, output: OutputStream, file: FileMeta,
+        buffer: ByteArray = ByteArray(262144), cancelled: ()->Boolean = { Thread.currentThread().isInterrupted },
+        progress: (Long)->Unit = {}): Long {
+        require(buffer.isNotEmpty())
+        val hash = MessageDigest.getInstance("SHA-256"); var copied = 0L; var emptyReads = 0
+        while(copied < file.size) {
+            if(cancelled()) throw InterruptedIOException("Saving verified files was cancelled")
+            val n = input.read(buffer,0,minOf(buffer.size.toLong(),file.size-copied).toInt())
+            if(n < 0) throw EOFException("Verified staging file became shorter")
+            if(n == 0) { if(++emptyReads >= 16) throw IOException("Staging input stopped returning bytes"); continue }
+            emptyReads = 0; output.write(buffer,0,n); hash.update(buffer,0,n); copied += n; progress(copied)
+        }
+        if(cancelled()) throw InterruptedIOException("Saving verified files was cancelled")
+        require(input.read() == -1 && MessageDigest.isEqual(hash.digest(),file.sha256)) { "Verified staging content changed before saving; destination was not finalized" }
+        return copied
+    }
     fun seed(input: InputStream, offset: Long, digest: MessageDigest, activity: ()->Unit = {}) {
         val buffer = ByteArray(262144); var remaining = offset
         while(remaining > 0) {

@@ -26,6 +26,10 @@ class TransferRuntime private constructor(private val context: Context) {
     private val main = Handler(Looper.getMainLooper())
     private val retries = RetryBudget()
     private val preparing = AtomicBoolean(false)
+    private data class Preparation(val scan: SourcePreparation, val signal: CancellationSignal)
+    private val preparation = java.util.concurrent.atomic.AtomicReference<Preparation?>(null)
+    data class DestinationRequest(val generation: Int, val transferId: String?)
+    private val destinationRequest = java.util.concurrent.atomic.AtomicReference<DestinationRequest?>(null)
     @Volatile var foreground = false
     @Volatile var latest: Map<String,Any?> = mapOf("status" to "idle","ready" to false,"secure" to false)
         private set
@@ -36,6 +40,8 @@ class TransferRuntime private constructor(private val context: Context) {
     @Volatile private var connecting: SSLSocket? = null
     @Volatile private var generation = 0
     @Volatile var service: TransferService? = null
+    private data class DestinationBinding(val uri: String?)
+    private val jobDestinations = ConcurrentHashMap<String,DestinationBinding>()
     private var destination: String? = context.getSharedPreferences("flashlink-destination",0).getString("tree",null)
     private var peerName = "My FlashLink"
     @Volatile private var authenticatedPin: String? = null
@@ -58,8 +64,10 @@ class TransferRuntime private constructor(private val context: Context) {
 
     init { work.execute { ledger.writableDatabase; ledger.releaseUnused(context.contentResolver.persistedUriPermissions.map { it.uri.toString() }) } }
     fun update(value: Map<String,Any?>) {
-        latest = value + mapOf("connectionMethod" to connectionMethod,"connectionHost" to host,"connectionPort" to port,"connectionSessionId" to lease?.invitation?.id,"destinationChosen" to (destination != null),
-            "destinationLabel" to destination?.let { runCatching { android.provider.DocumentsContract.getTreeDocumentId(Uri.parse(it)) }.getOrDefault("Selected SAF folder") })
+        val binding = (value["id"] as? String)?.let { jobDestinations[it] }
+        val destinationForView = if(binding != null) binding.uri else destination
+        latest = value + mapOf("connectionMethod" to connectionMethod,"connectionHost" to host,"connectionPort" to port,"connectionSessionId" to lease?.invitation?.id,"choosingDestination" to (destinationRequest.get() != null),"destinationChosen" to (destinationForView != null),
+            "destinationLabel" to destinationForView?.let { runCatching { android.provider.DocumentsContract.getTreeDocumentId(Uri.parse(it)) }.getOrDefault("Selected SAF folder") })
         val snapshot = latest
         main.post {
             listeners.forEach { runCatching { it(snapshot) } }
@@ -67,14 +75,37 @@ class TransferRuntime private constructor(private val context: Context) {
         }
     }
     fun pairing(): Map<String,Any?> = mapOf("fingerprint" to identity.fingerprint,"approvedPeer" to identity.peer)
-    fun destination(uri: Uri) {
-        check(latest["status"] !in ACTIVE) { "An incoming request arrived; reject it before changing folders" }
+    fun beginDestinationSelection(): DestinationRequest {
+        val state = latest
+        val incoming = state["status"] == "waitingForApproval" && state["direction"] == "received" && state["secure"] == true
+        check(!deciding.get() && (state["status"] !in ACTIVE || incoming)) { "Wait for the current transfer before choosing a folder" }
+        val request = DestinationRequest(generation,if(incoming) state["id"] as String else null)
+        check(destinationRequest.compareAndSet(null,request)) { "A folder picker is already open" }
+        update(latest); return request
+    }
+    fun finishDestinationSelection(request: DestinationRequest) {
+        if(destinationRequest.compareAndSet(request,null)) update(latest)
+    }
+    fun destination(uri: Uri, request: DestinationRequest) {
+        fun current() {
+            check(destinationRequest.get() === request && request.generation == generation) { "Connection changed while choosing a folder; retry" }
+            val state = latest
+            check(if(request.transferId == null) state["status"] !in ACTIVE else state["id"] == request.transferId && state["status"] == "waitingForApproval" && state["direction"] == "received") { "The incoming request changed or expired; choose a folder for the new request" }
+        }
+        current()
+        require(android.provider.DocumentsContract.isTreeUri(uri)) { "Select a Storage Access Framework folder" }
         check(context.contentResolver.persistedUriPermissions.any { it.uri == uri && it.isWritePermission }) { "A persistent writable folder grant is required" }
+        request.transferId?.let {
+            check(ledger.chooseDestination(it,uri.toString())) { "The file request is no longer awaiting approval" }
+            jobDestinations[it] = DestinationBinding(uri.toString())
+        }
+        current()
         val previous = destination
+        val persisted = context.getSharedPreferences("flashlink-destination",0).edit().putString("tree",uri.toString()).commit()
         destination = uri.toString()
-        check(context.getSharedPreferences("flashlink-destination",0).edit().putString("tree",destination).commit())
-        update(latest)
-        if(previous != null) metadata.execute { ledger.releaseUnused(listOf(previous)) }
+        if(request.transferId == null) (latest["id"] as? String)?.let { jobDestinations.remove(it) }
+        update(if(persisted) latest else latest + mapOf("message" to "Folder selected for this session, but the default could not be saved. Choose it again after restarting."))
+        if(previous != null) ledger.releaseUnused(listOf(previous))
     }
     @Synchronized fun open(state: Map<String,Any?>, name: String, size: Int = 262144, reconnect: Boolean = false) {
         check(foreground) { "Open FlashLink to establish an authenticated session" }
@@ -103,6 +134,7 @@ class TransferRuntime private constructor(private val context: Context) {
         check(retries.take()) { "Too many connection attempts. Wait one minute before trying again." }
         val approvedPeer = identity.peer ?: error("Approve the peer fingerprint first")
         val token = ++generation
+        jobDestinations.clear()
         val intent = Intent(context,TransferService::class.java)
         if(Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
         update(mapOf("status" to if(reconnect) "reconnecting" else "connecting","ready" to false,"secure" to false,"message" to "Authenticating the approved peer with mutual TLS…"))
@@ -187,23 +219,28 @@ class TransferRuntime private constructor(private val context: Context) {
                             ledger.writableDatabase.execSQL("UPDATE resume_jobs SET approved=0 WHERE id=?",arrayOf(event["id"]))
                     }
                     if(acceptsEvent) update(if(saved.isSuccess) snapshot else snapshot + mapOf("message" to "${event["message"] ?: ""} State/history could not be saved; check available storage before resuming."))
-                },{ ready, message ->
+                },{ ready, message -> synchronized(this) {
                     if(token == generation) {
-                        if(!ready) { retired = session; session = null }
+                        if(!ready) { stopPreparation(); retired = session; session = null }
                         update(latest + mapOf("ready" to ready,"secure" to ready,"peer" to if(ready) message else latest["peer"],
                             "authenticatedPeerFingerprint" to if(ready) pin else null,
                             "status" to if(ready) "idle" else if(latest["status"] in RETAINED) latest["status"] else "connectionLost",
                             "message" to if(ready) "Authenticated and encrypted. Each new manifest still needs approval." else message))
                         if(!ready) service?.stopIfIdle()
                     }
-                },bufferSize,{ !preparing.get() },{ manifest ->
+                } },bufferSize,{ !preparing.get() },{ manifest ->
                     check(permitRequest()) { "Too many transfer requests; session closed" }
                     !ledger.seen(manifest.id)
                 },{ manifest, outgoing ->
-                    if(!outgoing) ledger.create(manifest,pin,false,destination=destination)
+                    if(!outgoing) {
+                        val chosen = destination
+                        ledger.create(manifest,pin,false,destination=chosen)
+                        jobDestinations[manifest.id] = DestinationBinding(chosen)
+                    }
                 },{ manifest -> ledger.approve(manifest.id) },{ manifest ->
                     check(permitRequest()) { "Too many resume requests; session closed" }
                     val saved = ledger.matches(manifest,pin)
+                    if(saved != null) jobDestinations[manifest.id] = DestinationBinding(saved.destination)
                     if(saved == null || saved.outgoing) null
                     else if(ledger.receipt(manifest.id)) CompletedReceiptStore(manifest)
                     else if(!ledger.available(saved)) null else PrivateReceiveStore(ledger,saved)
@@ -245,46 +282,57 @@ class TransferRuntime private constructor(private val context: Context) {
         while(offerTicks.isNotEmpty() && now-offerTicks.first() >= 60000) offerTicks.removeFirst()
         if(offerTicks.size >= 10) false else { offerTicks.addLast(now); true }
     }
-    fun send(uris: List<String>) {
+    @Synchronized fun send(uris: List<String>) {
         require(uris.size in 1..128) { "Select between 1 and 128 files" }
+        val current = session ?: error("Session closed")
         check(latest["ready"] == true && latest["secure"] == true && latest["status"] !in ACTIVE && preparing.compareAndSet(false,true)) { "Open an idle authenticated session first" }
-        val token = generation; val current = session ?: error("Session closed")
+        val token = generation
+        val task = Preparation(SourcePreparation(bufferSize),CancellationSignal())
+        if(!preparation.compareAndSet(null,task)) { preparing.set(false); error("The previous source is still closing") }
         update(mapOf("status" to "preparing","ready" to true,"secure" to true,"peer" to latest["peer"],"authenticatedPeerFingerprint" to authenticatedPin,"message" to "Calculating immutable source identities…"))
         work.execute {
             try {
-                val sources = uris.map { source(it,token) }
+                var preparedBytes = 0L
+                val sources = uris.mapIndexed { index, value ->
+                    source(value,token,task) { name, bytes ->
+                        if(token == generation) update(latest + mapOf("preparingFile" to name,"preparingBytes" to Math.addExact(preparedBytes,bytes),"preparedFiles" to index,"fileCount" to uris.size))
+                    }.also { preparedBytes = Math.addExact(preparedBytes,it.meta.size) }
+                }
                 check(token == generation)
                 val manifest = Manifest(Protocol.id(),sources.map { it.meta })
                 ledger.create(manifest,authenticatedPin ?: error("No authenticated peer"),true,uris)
                 if(token != generation) { ledger.cancelSaved(manifest.id,false); error("Preparation cancelled") }
                 current.send(manifest,sources)
             } catch(e:Exception) { if(token == generation) update(latest + mapOf("status" to "failed","message" to e.message)) }
-            finally { preparing.set(false) }
+            finally { preparation.compareAndSet(task,null); runCatching { task.scan.close() }; preparing.set(false) }
         }
     }
-    private fun source(value: String, token: Int): Source {
+    private fun source(value: String, token: Int, task: Preparation, progress: (String,Long)->Unit): Source {
         val uri = Uri.parse(value); require(uri.scheme == "content")
         val resolver = context.contentResolver
         var name = "Document"; var size = -1L
-        resolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE),null,null,null)?.use { c ->
+        task.scan.ensureActive()
+        resolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME,OpenableColumns.SIZE),null,null,null,task.signal)?.use { c ->
             if(c.moveToFirst()) {
                 val n = c.getColumnIndex(OpenableColumns.DISPLAY_NAME); val s = c.getColumnIndex(OpenableColumns.SIZE)
                 if(n >= 0 && !c.isNull(n)) name = c.getString(n)
-                if(s >= 0 && !c.isNull(s)) size = c.getLong(s)
+                if(s >= 0 && !c.isNull(s)) size = c.getLong(s).takeIf { it >= 0 } ?: -1L
             }
         }
         Protocol.validName(name)
-        val digest = MessageDigest.getInstance("SHA-256"); var count = 0L
-        resolver.openInputStream(uri)?.use { input ->
-            val buffer = ByteArray(262144)
-            while(true) {
+        var lastProgress = 0L
+        progress(name,0)
+        val measured = resolver.openAssetFileDescriptor(uri,"r",task.signal)?.use { descriptor ->
+            val stream = descriptor.createInputStream()
+            task.scan.scan(stream,size) { bytes ->
                 check(token == generation) { "Preparation cancelled" }
-                val n = input.read(buffer); if(n < 0) break
-                digest.update(buffer,0,n); count = Math.addExact(count,n.toLong())
+                val tick = System.nanoTime()
+                if(tick-lastProgress >= 200_000_000L) { progress(name,bytes); lastProgress = tick }
             }
         } ?: error("Selected source is missing or its permission was revoked")
-        require(size < 0 || size == count) { "Source changed while preparing" }
-        val meta = FileMeta(Protocol.id(),name,count,resolver.getType(uri) ?: "application/octet-stream",digest.digest())
+        check(token == generation) { "Preparation cancelled" }
+        progress(name,measured.size)
+        val meta = FileMeta(Protocol.id(),name,measured.size,resolver.getType(uri) ?: "application/octet-stream",measured.sha256)
         return Source(meta) { resolver.openInputStream(uri) ?: error("Source is no longer readable") }
     }
     fun resumeSaved(id: String) {
@@ -300,6 +348,7 @@ class TransferRuntime private constructor(private val context: Context) {
         work.execute { try { check(token == generation); current.send(saved.manifest,sources,true) } catch(e:Exception) { if(token == generation) update(latest + mapOf("message" to e.message)) } }
     }
     fun approve(id: String, accept: Boolean) {
+        check(destinationRequest.get() == null) { "Finish choosing the destination folder first" }
         check(foreground && latest["secure"] == true && latest["id"] == id && latest["status"] == "waitingForApproval" && latest["direction"] == "received") { "Approval does not match the current manifest" }
         val current = session ?: error("Session closed")
         check(deciding.compareAndSet(false,true)) { "Approval is already being processed" }
@@ -311,9 +360,9 @@ class TransferRuntime private constructor(private val context: Context) {
         val token = generation
         work.execute { runCatching { check(token == generation); current.pause() }.onFailure { if(token == generation) update(latest + mapOf("message" to it.message)) } }
     }
-    fun cancel(id: String? = null, delete: Boolean = false) {
-        if(id != null && latest["id"] != id) { metadata.execute { ledger.cancelSaved(id,delete) }; return }
-        generation++; decision?.complete(false); runCatching { server?.close() }; runCatching { connecting?.close() }; runCatching { rawConnecting?.close() }
+    @Synchronized fun cancel(id: String? = null, delete: Boolean = false) {
+        if(id != null && latest["id"] != id) { metadata.execute { if(!ledger.cancelSaved(id,delete)) update(latest + mapOf("message" to "Some abandoned destination documents could not be removed; check the selected folder.")) }; return }
+        generation++; stopPreparation(); destinationRequest.set(null); decision?.complete(false); runCatching { server?.close() }; runCatching { connecting?.close() }; runCatching { rawConnecting?.close() }
         val previous = session; retired = previous; session = null
         val shouldCancelJob = latest["id"] is String && latest["status"] != "completed" || preparing.get() && latest["status"] == "preparing"
         if(previous != null) Thread {
@@ -327,11 +376,19 @@ class TransferRuntime private constructor(private val context: Context) {
         val cancelledId = id ?: closedState["id"] as? String
         metadata.execute {
             if(shouldCancelJob) ledger.state(closedState)
-            if(shouldCancelJob || delete) cancelledId?.let { ledger.cancelSaved(it,delete) }
+            if(shouldCancelJob || delete) cancelledId?.let { if(!ledger.cancelSaved(it,delete)) update(latest + mapOf("message" to "Some abandoned destination documents could not be removed; check the selected folder.")) }
         }
         service?.stopIfIdle()
     }
-    fun interrupt(reason: String) {
+    private fun stopPreparation() {
+        preparation.getAndSet(null)?.let { task ->
+            task.scan.requestCancel()
+            Thread { runCatching { task.scan.close() } }.start()
+            Thread { runCatching { task.signal.cancel() } }.start()
+        }
+    }
+    @Synchronized fun interrupt(reason: String) {
+        stopPreparation(); destinationRequest.set(null)
         decision?.complete(false); runCatching { rawConnecting?.close() }
         runCatching { server?.close() }; runCatching { connecting?.close() }
         val previous = session

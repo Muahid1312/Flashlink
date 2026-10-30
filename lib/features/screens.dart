@@ -118,7 +118,7 @@ class SendScreen extends ConsumerWidget {
       const SizedBox(height: 24),
       const TransferControls(),
       const SizedBox(height:12),
-      FilledButton(onPressed:files.isEmpty || !ref.watch(transferProvider).ready || ref.watch(transferProvider).active ? null :
+      FilledButton(onPressed:files.isEmpty || !ref.watch(transferProvider).secure || ref.watch(transferProvider).active ? null :
         () async { await ref.read(transferProvider.notifier).send(files); if(context.mounted) context.push('/transfer'); },child:const Text('Request file transfer')),
       TextButton(onPressed: () => context.push('/transfer'), child: const Text('View transfer screen')),
       const PhaseNotice(message: 'The authenticated receiver must approve the exact manifest before file bytes are sent. Pause retains private checkpoints.'),

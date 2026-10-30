@@ -115,4 +115,19 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('incoming files preview shows sizes and supports choosing a folder before approval', (tester) async {
+    final container = await launch(tester, size: const Size(320, 800), textScale: 1.4);
+    final platform = container.read(transferPlatformProvider) as FakeTransferPlatform;
+    platform.emit({'status':'waitingForApproval','direction':'received','ready':true,'secure':true,'id':'incoming',
+      'fileCount':1,'total':1234,'peer':'Approved peer','files':[{'name':'image.jpg','size':1234,'mime':'image/jpeg'}]});
+    container.read(routerProvider).go('/transfer');
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('Choose destination folder'), 300, scrollable: find.byType(Scrollable).last);
+    expect(find.text('1.2 KB · image/jpeg'), findsOneWidget);
+    final choose = tester.widget<TextButton>(find.widgetWithText(TextButton, 'Choose destination folder'));
+    final accept = tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Accept files'));
+    expect(choose.onPressed, isNotNull); expect(accept.onPressed, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
 }

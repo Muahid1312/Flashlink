@@ -108,4 +108,65 @@ class LedgerAuditTest {
         assertNotNull(ledger.matches(manifest,pin)); assertNull(ledger.matches(manifest,"d".repeat(64)))
         assertNull(ledger.matches(Manifest(manifest.id,listOf(manifest.files.single().copy(name="changed.bin"))),pin))
     }
+    @Test fun destinationSelectionBindsOnlyTheUnapprovedIncomingManifest() {
+        val first = manifest(); val second = manifest()
+        ledger.create(first,"a".repeat(64),false); ledger.create(second,"a".repeat(64),false)
+        assertTrue(ledger.chooseDestination(first.id,"content://test/tree/selected"))
+        assertEquals("content://test/tree/selected",ledger.load(first.id)!!.destination)
+        assertNull(ledger.load(second.id)!!.destination)
+        ledger.approve(first.id)
+        assertFalse(ledger.chooseDestination(first.id,"content://test/tree/other"))
+        assertEquals("content://test/tree/selected",ledger.load(first.id)!!.destination)
+    }
+    @Test fun lateFolderResultsCannotChangeCancelledOutgoingOrDeletedTransfers() {
+        val outgoing = manifest(); ledger.create(outgoing,"a".repeat(64),true)
+        assertFalse(ledger.chooseDestination(outgoing.id,"content://test/tree/selected"))
+        val cancelled = manifest(); ledger.create(cancelled,"a".repeat(64),false)
+        ledger.cancelSaved(cancelled.id,false)
+        assertFalse(ledger.chooseDestination(cancelled.id,"content://test/tree/selected"))
+        val deleted = manifest(); ledger.create(deleted,"a".repeat(64),false)
+        ledger.cancelSaved(deleted.id,true)
+        assertFalse(ledger.chooseDestination(deleted.id,"content://test/tree/selected"))
+    }
+
+    private class ExportProvider: android.content.ContentProvider() {
+        var deletes = 0
+        var deny = false
+        override fun onCreate() = true
+        override fun call(method: String, arg: String?, extras: android.os.Bundle?): android.os.Bundle {
+            check(method == "android:deleteDocument")
+            if(deny) throw SecurityException("Folder permission revoked")
+            deletes++; return android.os.Bundle()
+        }
+        override fun query(uri: android.net.Uri, projection: Array<out String>?, selection: String?, args: Array<out String>?, sort: String?): android.database.Cursor? = null
+        override fun getType(uri: android.net.Uri): String? = null
+        override fun insert(uri: android.net.Uri, values: android.content.ContentValues?): android.net.Uri? = null
+        override fun delete(uri: android.net.Uri, selection: String?, args: Array<out String>?): Int = 0
+        override fun update(uri: android.net.Uri, values: android.content.ContentValues?, selection: String?, args: Array<out String>?): Int = 0
+    }
+    private fun exportFixture(completed: Boolean = false): Pair<Manifest,ExportProvider> {
+        val provider = ExportProvider()
+        provider.attachInfo(context,android.content.pm.ProviderInfo().apply { authority = "flashlink.testexports" })
+        org.robolectric.shadows.ShadowContentResolver.registerProviderInternal("flashlink.testexports",provider)
+        val manifest = manifest(); ledger.create(manifest,"a".repeat(64),false)
+        ledger.writableDatabase.execSQL("INSERT INTO resume_files(job,id,export_uri) VALUES(?,?,?)",arrayOf<Any?>(manifest.id,manifest.files.single().id,"content://flashlink.testexports/document/partial"))
+        if(completed) ledger.state(event(manifest,"completed"))
+        return manifest to provider
+    }
+    @Test fun deletingAnAbandonedTransferRemovesItsJournalledSafDocuments() {
+        val (manifest,provider) = exportFixture()
+        assertTrue(ledger.cancelSaved(manifest.id,true))
+        assertEquals(1,provider.deletes); assertNull(ledger.load(manifest.id)); assertTrue(ledger.seen(manifest.id))
+    }
+    @Test fun deletingCompletedHistoryNeverDeletesTheFinalDestinationDocuments() {
+        val (manifest,provider) = exportFixture(completed=true)
+        assertTrue(ledger.cancelSaved(manifest.id,true))
+        assertEquals(0,provider.deletes); assertTrue(ledger.receipt(manifest.id))
+    }
+    @Test fun revokedSafPermissionIsReportedWithoutUndoingTheCancellationTombstone() {
+        val (manifest,provider) = exportFixture(); provider.deny = true
+        assertFalse(ledger.cancelSaved(manifest.id,false))
+        assertEquals("cancelled",ledger.load(manifest.id)!!.status); assertTrue(ledger.seen(manifest.id))
+    }
+
 }
