@@ -67,7 +67,7 @@ class WifiDirectGateway(private val activity: Activity, messenger: BinaryMesseng
                 }
                 WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> reconcile()
             } } catch (_:SecurityException) { reconcilePermissionLoss() }
-            catch(e:Exception) { Log.w("FlashLinkP2P","Broadcast reconciliation failed",e); fail("Wi-Fi Direct state update failed (${e.javaClass.simpleName}). Refresh to recover the channel.") }
+            catch(e:Exception) { Log.w("FlashLinkP2P","Broadcast reconciliation failed (${e.javaClass.simpleName})"); fail("Wi-Fi Direct state update failed (${e.javaClass.simpleName}). Refresh to recover the channel.") }
         }
     }
 
@@ -168,7 +168,7 @@ class WifiDirectGateway(private val activity: Activity, messenger: BinaryMesseng
         } catch (_: SecurityException) {
             reconcilePermissionLoss()
             result.error("PERMISSION_REQUIRED", message, null)
-        } catch (_: IllegalArgumentException) { result.error("INVALID_STATE", "Refresh and select an available device", null) } catch (e: Exception) { Log.w("FlashLinkP2P","Framework operation failed",e); fail("Wi-Fi Direct framework: ${e.javaClass.simpleName}. Refresh to reinitialize or use Local Wi-Fi / hotspot."); result.error("FRAMEWORK_ERROR", message, null) }
+        } catch (_: IllegalArgumentException) { result.error("INVALID_STATE", "Refresh and select an available device", null) } catch (e: Exception) { Log.w("FlashLinkP2P","Framework operation failed (${e.javaClass.simpleName})"); fail("Wi-Fi Direct framework: ${e.javaClass.simpleName}. Refresh to reinitialize or use Local Wi-Fi / hotspot."); result.error("FRAMEWORK_ERROR", message, null) }
     }
     private fun busy() = phase == "connecting" || phase == "disconnecting" || phase == "connected"
     private fun listener(token: Int, operation: String, attempt: Int = 1,

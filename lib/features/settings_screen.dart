@@ -103,7 +103,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       )),
       const SectionTitle('About FlashLink'),
       const Panel(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('FlashLink 0.1.0 · Preview', style: TextStyle(fontWeight: FontWeight.w700)),
+        Text(bool.fromEnvironment('FLASHLINK_TEST_PREVIEW') ? 'FlashLink 0.1.0 (2) · Test-signed release preview' : 'FlashLink 0.1.0 (2) · Preview', style: TextStyle(fontWeight: FontWeight.w700)),
         SizedBox(height: 12), Text('Direct sharing, thoughtfully built.'), SizedBox(height: 8),
         Text('No account. No cloud. Background transfers use a visible foreground-service notification.'),
       ])),

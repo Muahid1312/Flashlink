@@ -1,7 +1,7 @@
 name: flashlink
 description: Offline-first direct file sharing. Authenticated, resumable offline sharing for Android.
 publish_to: none
-version: 0.1.0+1
+version: 0.1.0+2
 environment:
   sdk: '^3.12.0'
   flutter: '>=3.44.0'

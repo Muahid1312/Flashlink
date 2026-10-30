@@ -116,6 +116,40 @@ object ProtocolIntegration {
                 invalid { sender.send(manifest,sources) }
             }
         }
+        test("twenty sequential approved batches reuse one session without stale progress") {
+            Pairing().use { pair ->
+                repeat(20) {
+                    val sources = sources(listOf(0,65537)); val manifest = Manifest(Protocol.id(),sources.map { it.meta })
+                    pair.a.send(manifest,sources)
+                    check(await(pair.bEvents,"waitingForApproval")["id"] == manifest.id)
+                    pair.b.accept()
+                    check(await(pair.aEvents,"completed")["id"] == manifest.id)
+                    val done = await(pair.bEvents,"completed")
+                    check(done["bytes"] == 65537L && done["completedFiles"] == 2 && done["verified"] == true)
+                }
+                check(pair.storeB.bytes == 20*65537L && pair.storeB.commits == 40)
+            }
+        }
+        test("completion persistence failure cannot send a successful receipt") {
+            val server = ServerSocket(0,1,InetAddress.getLoopbackAddress())
+            val client = Socket(InetAddress.getLoopbackAddress(),server.localPort); val accepted = server.accept(); server.close()
+            val ready = CountDownLatch(2); val disconnected = CountDownLatch(1)
+            val senderEvents = LinkedBlockingQueue<Map<String,Any?>>()
+            val offer = CountDownLatch(1); val senderLost = CountDownLatch(1)
+            val sender = TransferSession(client,"Sender",{Store()},{senderEvents.offer(it)},{ok,_ -> if(ok) ready.countDown() else senderLost.countDown()},stallTimeoutSeconds=2)
+            val receiver = TransferSession(accepted,"Receiver",{Store()},{ event ->
+                if(event["status"] == "waitingForApproval") offer.countDown()
+                if(event["status"] == "completed") throw IOException("Injected durable receipt failure")
+            },{ok,_ -> if(ok) ready.countDown() else disconnected.countDown()},stallTimeoutSeconds=2)
+            try {
+                sender.start(); receiver.start(); check(ready.await(5,TimeUnit.SECONDS))
+                val sources = sources(listOf(65537)); sender.send(Manifest(Protocol.id(),sources.map { it.meta }),sources)
+                check(offer.await(5,TimeUnit.SECONDS)); receiver.accept()
+                check(disconnected.await(5,TimeUnit.SECONDS))
+                check(senderLost.await(5,TimeUnit.SECONDS))
+                check(senderEvents.none { it["status"] == "completed" })
+            } finally { sender.close(); receiver.close() }
+        }
         test("receiver rejection sends no bytes and cannot restart same job") {
             Pairing().use { pair ->
                 val sources = sources(listOf(1000000)); pair.a.send(Manifest(Protocol.id(),sources.map { it.meta }),sources)

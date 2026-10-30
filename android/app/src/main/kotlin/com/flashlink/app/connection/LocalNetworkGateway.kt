@@ -28,6 +28,8 @@ class LocalNetworkGateway(private val activity: Activity, messenger: BinaryMesse
     private var registration: NsdManager.RegistrationListener? = null
     private var hosting: ConnectionInvitation? = null
     private var resolving = false
+    private var resolution = 0
+    private var resolveTimeout: Runnable? = null
     private val queue = ArrayDeque<NsdServiceInfo>()
     private val presentServices = mutableSetOf<String>()
     private val peers = linkedMapOf<String,ConnectionInvitation>()
@@ -139,8 +141,8 @@ class LocalNetworkGateway(private val activity: Activity, messenger: BinaryMesse
             } }
             override fun onStopDiscoveryFailed(type: String, code: Int) { }
             override fun onServiceFound(service: NsdServiceInfo) { main.post {
-                if(token == generation && foreground && service.serviceType.contains("_flashlink._tcp") && queue.size < 32 && peers.size < 32) {
-                    presentServices.add(service.serviceName); queue.addLast(service); resolveNext(token)
+                if(token == generation && foreground && service.serviceType.contains("_flashlink._tcp") && presentServices.size < 32 && presentServices.add(service.serviceName)) {
+                    queue.addLast(service); resolveNext(token)
                 }
             } }
             override fun onServiceLost(service: NsdServiceInfo) { main.post { if(token == generation) { presentServices.remove(service.serviceName); peers.remove(service.serviceName); emit() } } }
@@ -155,15 +157,28 @@ class LocalNetworkGateway(private val activity: Activity, messenger: BinaryMesse
     private fun resolveNext(token: Int) {
         if(resolving || queue.isEmpty() || token != generation) return
         resolving = true
+        val request = ++resolution
+        fun finish(): Boolean {
+            if(request != resolution) return false
+            resolving = false; resolveTimeout?.let { main.removeCallbacks(it) }; resolveTimeout = null
+            return true
+        }
+        resolveTimeout = Runnable {
+            if(request == resolution && token == generation) {
+                stopDiscovery()
+                message = "Local listener resolution timed out. Refresh to retry, or use its QR/link or manual IP/port."
+                emit()
+            }
+        }.also { main.postDelayed(it,10_000) }
         val item = queue.removeFirst()
         try { nsd.resolveService(item,object: NsdManager.ResolveListener {
             override fun onResolveFailed(service: NsdServiceInfo, code: Int) { main.post {
-                resolving = false
+                if(!finish()) return@post
                 if(token == generation) { message = "Could not resolve a local listener (NSD $code). Use its QR/link or manual IP/port."; emit() }
                 if(foreground) resolveNext(generation)
             } }
             override fun onServiceResolved(service: NsdServiceInfo) { main.post {
-                resolving = false
+                if(!finish()) return@post
                 if(token != generation || !foreground) { if(foreground) resolveNext(generation); return@post }
                 runCatching {
                     fun field(key: String) = service.attributes[key]?.let { String(it,Charsets.UTF_8) } ?: error("Missing invitation field")
@@ -174,10 +189,11 @@ class LocalNetworkGateway(private val activity: Activity, messenger: BinaryMesse
                 }
                 resolving = false; emit(); resolveNext(token)
             } }
-        }) } catch(e:Exception) { resolving = false; message = "Local listener resolution unavailable (${e.javaClass.simpleName}). Use QR or manual pairing."; emit(); resolveNext(token) }
+        }) } catch(e:Exception) { if(finish()) { message = "Local listener resolution unavailable (${e.javaClass.simpleName}). Use QR or manual pairing."; emit(); resolveNext(token) } }
     }
     private fun stopDiscovery() {
         generation++; queue.clear(); presentServices.clear()
+        resolution++; resolving = false; resolveTimeout?.let { main.removeCallbacks(it) }; resolveTimeout = null
         discovery?.let { runCatching { nsd.stopServiceDiscovery(it) } }; discovery = null
     }
     fun resume() {
@@ -186,7 +202,8 @@ class LocalNetworkGateway(private val activity: Activity, messenger: BinaryMesse
             try { connectivity.registerNetworkCallback(NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),network); observing = true }
             catch(e:Exception) { message = "Network observation unavailable (${e.javaClass.simpleName}); refresh local status manually." }
         }
-        emit()
+        hosting?.takeIf { it.expires <= System.currentTimeMillis() }?.let { hosting = null }
+        runtimeListener(runtime.latest)
     }
     fun suspend() {
         foreground = false; stopDiscovery(); unadvertise()

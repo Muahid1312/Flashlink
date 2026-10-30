@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   build:
-    name: Test and build debug APK
+    name: Test and build Android APKs
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     defaults:
@@ -70,6 +70,14 @@ jobs:
         id: dependencies
         run: flutter pub get 2>&1 | tee "$RUNNER_TEMP/flashlink-dependencies.log"
 
+      - name: Format Dart source
+        id: format
+        run: dart format lib test 2>&1 | tee "$RUNNER_TEMP/flashlink-format.log"
+
+      - name: Verify APK metadata checks
+        id: apk_checks
+        run: python3 -m unittest discover -s tool -p 'test_*.py' 2>&1 | tee "$RUNNER_TEMP/flashlink-apk_checks.log"
+
       - name: Analyze Flutter source
         id: analyze
         run: flutter analyze 2>&1 | tee "$RUNNER_TEMP/flashlink-analyze.log"
@@ -92,12 +100,29 @@ jobs:
         working-directory: android
         run: ./gradlew testDebugUnitTest --no-daemon --max-workers=2 --console=plain 2>&1 | tee "$RUNNER_TEMP/flashlink-native_tests.log"
 
+      - name: Build and verify test-signed release preview
+        id: preview
+        run: ./tool/build_apk.sh preview 2>&1 | tee "$RUNNER_TEMP/flashlink-preview.log"
+
+      - name: Check release preview artifact
+        id: preview_verify
+        run: test -s build/artifacts/flashlink-preview.apk
+
       - name: Upload installable debug APK
         id: upload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: FlashLink-Android-APK
           path: build/artifacts/flashlink-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test-signed release preview APK
+        id: preview_upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: FlashLink-Android-Preview-APK
+          path: build/artifacts/flashlink-preview.apk
           if-no-files-found: error
           retention-days: 14
 

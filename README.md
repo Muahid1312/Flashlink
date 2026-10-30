@@ -133,20 +133,46 @@ No phones are attached to the coding environment. JVM TLS tests do not validate 
 7. Replay an old OFFER or change its manifest; confirm rejection. Cancel/delete history and verify the old approval cannot be reused. Test final-ACK loss and completed-receipt reconciliation.
 8. Check destination collisions and interrupted exports, then cancellation cleanup. Measure actual encrypted throughput in both directions and with each buffer size; do not extrapolate host loopback rates to phones.
 
-A release is not ready until an APK builds and the pending two-phone checks pass.
+A production release is not ready until the pending two-phone checks pass and the owner's production signing key is configured. The current acceptance matrix below is **awaiting physical-device verification**; host/Robolectric and Flutter tests are automated tests, not emulator or phone results. No emulator or physical phones are available in the coding environment.
+
+Run every row on Wi-Fi Direct and on the same Wi-Fi/manually enabled hotspot, reverse sender/receiver roles, and retain the real Diagnostics results. Compare source and exported destination hashes independently on a trusted computer. Record actual phone models, Android versions, connection mode, buffer size and observed errors; do not fill in results before testing.
+
+| Case | Two-phone procedure and acceptance condition | Status |
+| --- | --- | --- |
+| A | Discover on both phones; use QR/link/manual fallback if multicast is blocked. Only actual peers appear. | Manual pending |
+| B | Reject then accept a connection; wrong pins/expired invitations fail. Confirm the exact file offer separately. | Manual pending |
+| C | Transfer a known 10 MB file; bytes and independently computed SHA-256 match. | Manual pending |
+| D | Repeat with 100 MB; record actual duration, application MB/s and verification/save time. | Manual pending |
+| E | Repeat with 1 GB, then >4 GB when both staging and destination have room. | Manual pending |
+| F | Send multiple files, an empty file and duplicate names. Verify each exported file and queue state. | Manual pending |
+| G | Pause from each phone mid-file; reconnect the same peer and validate/resume at a durable nonzero offset. | Manual pending |
+| H | Disable Wi-Fi mid-transfer, reopen it and create a fresh authenticated session; resume and verify the final hash. | Manual pending |
+| I | Change a source or corrupt a partial in a test build; mismatches fail without a verified completion. | Manual pending |
+| J | Disable mobile data and internet access while keeping the local Wi-Fi/hotspot active; transfers still succeed. | Manual pending |
+| K | Background and screen-lock during transfer; inspect real notification progress and Pause/Cancel. Test process death/relaunch separately. | Manual pending |
+| L | Deny nearby access, disable Wi-Fi, fill storage and revoke a URI grant. Show actionable errors and no false completion. | Manual pending |
+| M | Relaunch after a completed batch; history remains verified and Open/Share work. Deleting history keeps destination files. | Manual pending |
+| N | Run 20 sequential transfers, recreate the activity and background/return while listening; check discovery recovery and `adb shell dumpsys meminfo com.flashlink.app.preview` for growth. | Manual pending |
+
+Android compatibility: minimum API 24, target/compile API 36 with the pinned Flutter toolchain. Android 13+ Wi-Fi Direct asks for Nearby Wi-Fi only when requested; API 24–32 uses fine location (Android 12 requests coarse/fine together). LAN has no broad storage/location request; SAF grants provide file access. The connected-device foreground-service type and normal permissions are declared; API 33+ notifications remain opt-in. Partial CPU wake locks are bounded, and no battery exemption or background-restart bypass is requested. Wi-Fi Direct hardware is optional; IPv4 LAN/hotspot remains an alternative. IPv6-only LAN, OEM radio behavior, guest isolation and battery restrictions require the manual cases above.
 
 
 ## Build and install a test APK
 
-No release key is generated or replaced by these helpers. If a release key is available, put `storeFile`, `storePassword`, `keyAlias` and `keyPassword` in ignored `android/key.properties`; `storeFile` is resolved relative to `android`. Never commit that file or its keystore. `tool/build_apk.sh release` refuses missing signing configuration. With no release key, use a debug APK for testing.
+`./tool/build_apk.sh preview` produces a **release-mode/AOT, non-debuggable, Android-test-key-signed preview** when production signing is absent. It uses the separate `com.flashlink.app.preview` application ID, version `0.1.0-preview` (code 2), and output `build/artifacts/flashlink-preview.apk`. It is installable for acceptance testing, **not production signed**. CI uploads it separately as `FlashLink-Android-Preview-APK`, alongside the verified debug artifact. Test keys on clean CI runners can change; updating an older preview with a different signing certificate may require removing that test installation and its local data first. No helper automatically uninstalls user data.
+
+Ordinary `./tool/build_apk.sh release` still refuses missing production signing credentials; the preview never silently substitutes for that command. All modes verify the actual APK signature, app label/identifier/version/SDK and merged permissions. Release/preview outputs must be non-debuggable and contain AOT code. Failed attempts remove stale named output artifacts.
+
+No production release key is generated or replaced by these helpers. If a release key is available, put `storeFile`, `storePassword`, `keyAlias` and `keyPassword` in ignored `android/key.properties`; `storeFile` is resolved relative to `android`. Never commit that file or its keystore. `tool/build_apk.sh release` refuses missing signing configuration. With no release key, use a debug APK for testing.
 
 ```sh
 ./tool/build_apk.sh debug
+./tool/build_apk.sh preview
 # Or, only with your existing release keystore configured:
 ./tool/build_apk.sh release
 ```
 
-The helper builds through Flutter, checks a nonempty APK, verifies its signature with Android `apksigner`, then prints its **actual** absolute artifact path. Only a successful verified build creates the named `flashlink-debug.apk` or `flashlink-release.apk` under `build/artifacts`. A script's existence is not evidence that either APK exists.
+The helper builds through Flutter, checks a nonempty APK, verifies its signature with Android `apksigner`, then prints its **actual** absolute artifact path. Only a successful verified build creates the named `flashlink-debug.apk`, `flashlink-preview.apk` or `flashlink-release.apk` under `build/artifacts`. A script's existence is not evidence that either APK exists.
 
 Connect exactly one authorized USB test phone with USB debugging enabled, run `./tool/install_apk.sh` for the verified debug artifact, then repeat with the other phone. The helper performs `adb -d install -r` and refuses a missing/empty APK. Pass a verified release artifact path as its first argument to test that build. On machines without tools in PATH, set FLUTTER, ANDROID_HOME, APKSIGNER or ADB to their installed paths as appropriate.
 

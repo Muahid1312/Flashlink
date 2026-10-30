@@ -23,12 +23,13 @@ object FileValidation {
     fun hash(input: InputStream, size: Long, prefix: Long = 0, cancelled: ()->Boolean = { Thread.currentThread().isInterrupted }, activity: ()->Unit = {}): Pair<ByteArray,ByteArray> {
         require(size >= 0 && prefix in 0..size)
         val full = MessageDigest.getInstance("SHA-256"); val partial = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteArray(262144); var copied = 0L
+        val buffer = ByteArray(262144); var copied = 0L; var emptyReads = 0
         while(copied < size) {
             if(cancelled()) throw InterruptedIOException("Source validation interrupted")
             val n = input.read(buffer,0,minOf(buffer.size.toLong(),size-copied).toInt())
             if(n < 0) throw EOFException("Source or partial file is shorter than its checkpoint")
-            if(n == 0) continue
+            if(n == 0) { if(++emptyReads >= 16) throw IOException("Source provider stopped returning validation bytes"); continue }
+            emptyReads = 0
             full.update(buffer,0,n)
             val p = minOf(n.toLong(),(prefix-copied).coerceAtLeast(0)).toInt()
             if(p > 0) partial.update(buffer,0,p)
@@ -60,12 +61,13 @@ object FileValidation {
         return copied
     }
     fun seed(input: InputStream, offset: Long, digest: MessageDigest, activity: ()->Unit = {}) {
-        val buffer = ByteArray(262144); var remaining = offset
+        val buffer = ByteArray(262144); var remaining = offset; var emptyReads = 0
         while(remaining > 0) {
             if(Thread.currentThread().isInterrupted) throw InterruptedIOException("Prefix validation interrupted")
             val n = input.read(buffer,0,minOf(buffer.size.toLong(),remaining).toInt())
             if(n < 0) throw EOFException("Missing resume prefix")
-            if(n == 0) continue
+            if(n == 0) { if(++emptyReads >= 16) throw IOException("Source provider stopped returning prefix bytes"); continue }
+            emptyReads = 0
             digest.update(buffer,0,n); remaining -= n; activity()
         }
     }

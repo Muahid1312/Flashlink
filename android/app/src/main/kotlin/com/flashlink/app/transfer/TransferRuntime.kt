@@ -200,6 +200,7 @@ class TransferRuntime private constructor(private val context: Context) {
                 if(token != generation) { socket.close(); return }
                 val pin = approvedPeer
                 authenticatedPin = pin
+                val sessionMethod = connectionMethod
                 val created = TransferSession(socket,peerName,{ manifest ->
                     check(foreground) { "Return to FlashLink before approving incoming files" }
                     val saved = ledger.load(manifest.id) ?: error("Manifest missing")
@@ -208,23 +209,26 @@ class TransferRuntime private constructor(private val context: Context) {
                     check(saved.destination != null) { "Choose a destination folder before opening a session" }
                     PrivateReceiveStore(ledger,saved)
                 },{ event ->
-                    if(event["status"] in setOf("completed","paused","interrupted","failed","cancelled")) {
-                        val method = connectionMethod
-                        metadata.execute { runCatching { ledger.recordPerformance(event,method) }.onFailure {
-                            android.util.Log.w("FlashLinkPerformance","Could not retain local diagnostics (${it.javaClass.simpleName})")
-                        } }
-                    }
                     val retained = event["status"] in RETAINED
-                    val acceptsEvent = token == generation || (event["id"] == latest["id"] && latest["status"] == "cancelled" && event["status"] == "cancelled")
                     val snapshot = event + mapOf("ready" to (latest["ready"] == true && event["status"] !in setOf("paused","interrupted","failed","cancelled")),"secure" to (event["status"] !in setOf("paused","interrupted","failed","cancelled")))
                     // UI terminal states must not wait for a failing storage provider/database.
-                    if(acceptsEvent && retained) update(snapshot)
+                    if(retained && event["status"] != "completed") publishSession(token,snapshot)
                     val saved = runCatching {
                         ledger.state(event)
                         if(event["status"] == "failed" && (event["message"] as? String)?.let { it.contains("Source content changed") || it.contains("checkpoint does not match") || it.contains("SHA-256 mismatch") } == true)
                             ledger.writableDatabase.execSQL("UPDATE resume_jobs SET approved=0 WHERE id=?",arrayOf(event["id"]))
                     }
-                    if(acceptsEvent) update(if(saved.isSuccess) snapshot else snapshot + mapOf("message" to "${event["message"] ?: ""} State/history could not be saved; check available storage before resuming."))
+                    if(event["status"] == "completed" && saved.isFailure) {
+                        // Never publish success or send COMPLETE before the durable receipt commits.
+                        val failure = event + mapOf("status" to "interrupted","verified" to false,"ready" to false,"secure" to false,
+                            "message" to "Completion could not be saved. Free storage, reopen FlashLink, then reconnect and reconcile the saved transfer.")
+                        runCatching { ledger.state(failure) }
+                        publishSession(token,failure)
+                        recordPerformance(failure,sessionMethod)
+                        throw IOException("Completion receipt could not be committed; reconnect after restoring storage",saved.exceptionOrNull())
+                    }
+                    recordPerformance(event,sessionMethod)
+                    publishSession(token,if(saved.isSuccess) snapshot else snapshot + mapOf("message" to "${event["message"] ?: ""} State/history could not be saved; check available storage before resuming."))
                 },{ ready, message -> synchronized(this) {
                     if(token == generation) {
                         if(!ready) { stopPreparation(); retired = session; session = null }
@@ -254,7 +258,7 @@ class TransferRuntime private constructor(private val context: Context) {
                     // Sender confirmation is informational. Receiver's validated ledger remains authoritative on resume.
                     ledger.writableDatabase.execSQL("INSERT OR REPLACE INTO resume_files(job,id,offset,verified) VALUES(?,?,?,0)",arrayOf<Any?>(manifest.id,file.id,offset))
                 })
-                connecting = null; session = created; created.start(); return
+                startSession(token,created); return
             } catch(e: Exception) {
                 last = e
                 runCatching { connecting?.close() }; connecting = null; runCatching { rawConnecting?.close() }; rawConnecting = null
@@ -266,6 +270,25 @@ class TransferRuntime private constructor(private val context: Context) {
             update(latest + mapOf("status" to "connectionLost","ready" to false,"secure" to false,"message" to "Secure connection failed: ${last?.message}. Verify both fingerprints and create a fresh listener/invitation. Wi-Fi guest isolation can block local peers."))
             service?.stopIfIdle()
         }
+    }
+    @Synchronized private fun startSession(token: Int, created: TransferSession) {
+        if(token != generation) { created.close(); return }
+        connecting = null; session = created; created.start()
+    }
+    @Synchronized private fun publishSession(token: Int, snapshot: Map<String,Any?>) {
+        if(token == generation) { update(snapshot); return }
+        // Completion may win before Cancel while its receipt is committing. Keep files,
+        // but never resurrect the closed connection or overwrite a newer job's state.
+        if(snapshot["id"] == latest["id"] && latest["status"] == "cancelled" && snapshot["status"] in setOf("completed","cancelled")) {
+            update(snapshot + mapOf("ready" to false,"secure" to false) + if(snapshot["status"] == "completed")
+                mapOf("message" to "Files completed and were saved before the connection closed.") else emptyMap())
+        }
+    }
+    private fun recordPerformance(event: Map<String,Any?>, method: String) {
+        if(event["status"] !in setOf("completed","paused","interrupted","failed","cancelled")) return
+        metadata.execute { runCatching { ledger.recordPerformance(event,method) }.onFailure {
+            android.util.Log.w("FlashLinkPerformance","Could not retain local diagnostics (${it.javaClass.simpleName})")
+        } }
     }
     private fun confirmConnection(token: Int, name: String, pin: String, currentLease: InvitationLease): Boolean {
         if(token != generation || !foreground) return false

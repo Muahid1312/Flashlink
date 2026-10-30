@@ -9,6 +9,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class FileStreamingTest {
     private fun meta(bytes: ByteArray) = FileMeta(Protocol.id(),"archive.zip",bytes.size.toLong(),"application/zip",MessageDigest.getInstance("SHA-256").digest(bytes))
+    @Test fun resumeHashAndPrefixValidationRejectStalledProviders() {
+        val stalled = object: java.io.InputStream() {
+            override fun read(): Int = 0
+            override fun read(buffer: ByteArray,offset: Int,length: Int): Int = 0
+        }
+        assertTrue(runCatching { FileValidation.hash(stalled,1) }.exceptionOrNull() is java.io.IOException)
+        assertTrue(runCatching { FileValidation.seed(stalled,1,MessageDigest.getInstance("SHA-256")) }.exceptionOrNull() is java.io.IOException)
+    }
     @Test fun unknownSourceSizeIsMeasuredWithTheActualBytesAndHash() {
         val bytes = ByteArray(1_048_579) { (it % 251).toByte() }
         val samples = mutableListOf<Long>()

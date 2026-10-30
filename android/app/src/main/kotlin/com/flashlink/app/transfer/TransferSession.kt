@@ -148,8 +148,10 @@ class TransferSession(
                     job.bytes = manifest.files.take(point.completed).sumOf { it.size } + point.offset
                     if(resume) job.metrics.measure(TransferMetrics.Stage.VALIDATION) {
                         sources.forEachIndexed { index, source ->
-                            if(index >= point.completed) FileValidation.source(source,if(index == point.completed) point.offset else 0,
-                                if(index == point.completed) point.prefix else null, cancelled = { closed.get() || job.pause.get() || Thread.currentThread().isInterrupted }, activity = { touchActivity() })
+                            if(index >= point.completed) try {
+                                FileValidation.source(Source(source.meta) { openInput(job,source) },if(index == point.completed) point.offset else 0,
+                                    if(index == point.completed) point.prefix else null, cancelled = { closed.get() || job.pause.get() || Thread.currentThread().isInterrupted }, activity = { touchActivity() })
+                            } finally { job.input = null }
                         }
                     }
                     job.completed = point.completed
@@ -163,8 +165,7 @@ class TransferSession(
                         job.checkpointOffset = offset; job.chunk = MessageDigest.getInstance("SHA-256")
                         wire.write(Protocol.FILE, Protocol.token(source.meta.id))
                         val digest = MessageDigest.getInstance("SHA-256")
-                        source.open().use { input ->
-                            job.input = input
+                        openInput(job,source).use { input ->
                             job.metrics.measure(TransferMetrics.Stage.VALIDATION) { FileValidation.seed(input,offset,digest) { touchActivity() } }
                             var remaining = source.meta.size - offset
                             var emptyReads = 0
@@ -414,6 +415,13 @@ class TransferSession(
         require(ack.first == kind && ack.second == id) { "Invalid transfer acknowledgement" }
     }
     private fun ensureActive(job: Job) { check(!closed.get() && active.get() === job) { "Transfer cancelled" } }
+    private fun openInput(job: Job, source: Source): InputStream {
+        val input = source.open()
+        job.input = input
+        // Cancel can win while ContentResolver is opening. A late stream must still close.
+        try { ensureActive(job) } catch(error: Exception) { job.input = null; runCatching { input.close() }; throw error }
+        return input
+    }
     private fun emit(job: Job, force: Boolean = false, message: String? = null) {
         synchronized(job) {
             if(active.get() !== job && !(force && job.phase in listOf("completed","failed","cancelled","paused","interrupted"))) return

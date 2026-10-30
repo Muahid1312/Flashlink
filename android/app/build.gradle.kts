@@ -11,9 +11,11 @@ val releaseProperties = Properties().apply {
 val releaseSigningReady = listOf("storeFile", "storePassword", "keyAlias", "keyPassword").all {
     !releaseProperties.getProperty(it).isNullOrBlank()
 } && rootProject.file(releaseProperties.getProperty("storeFile") ?: ".missing-release-keystore").isFile
+// Explicit test-only opt-in. Ordinary release builds still require the owner's key.
+val testPreview = providers.gradleProperty("flashlinkPreview").orNull == "true"
 
 gradle.taskGraph.whenReady {
-    if(allTasks.any { it.path in setOf(":app:assembleRelease", ":app:bundleRelease", ":app:packageRelease") } && !releaseSigningReady) {
+    if(allTasks.any { it.path in setOf(":app:assembleRelease", ":app:bundleRelease", ":app:packageRelease") } && !releaseSigningReady && !testPreview) {
         throw GradleException("Release signing is not configured. Supply ignored android/key.properties with storeFile, storePassword, keyAlias and keyPassword, or build a debug APK for testing. No release key is generated automatically.")
     }
 }
@@ -33,7 +35,15 @@ android {
             keyAlias = releaseProperties.getProperty("keyAlias")
             keyPassword = releaseProperties.getProperty("keyPassword")
         }
-        buildTypes.getByName("release").signingConfig = signingConfigs.getByName("release")
+    }
+    buildTypes.getByName("release") {
+        isDebuggable = false
+        if(testPreview) {
+            // Release/AOT code, signed with the Android test key, in a separate install namespace.
+            signingConfig = signingConfigs.getByName("debug")
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview"
+        } else if(releaseSigningReady) signingConfig = signingConfigs.getByName("release")
     }
     defaultConfig {
         applicationId = "com.flashlink.app"

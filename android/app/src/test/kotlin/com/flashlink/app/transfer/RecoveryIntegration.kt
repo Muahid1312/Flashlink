@@ -172,6 +172,35 @@ object RecoveryIntegration {
                 }
                 check(FileInputStream(File(partial,meta.id)).use { FileValidation.hash(it,meta.size).first }.contentEquals(meta.sha256))
             }
+            test("cancel closes blocked resume validation and streams that open after cancellation") {
+                for(lateOpen in listOf(false,true)) {
+                    val folder = File(root,"cancel-validation-$lateOpen").apply { mkdirs() }
+                    val request = Manifest(Protocol.id(),listOf(meta))
+                    val opened = CountDownLatch(1); val release = CountDownLatch(1); val closed = CountDownLatch(1)
+                    val blocking = object: InputStream() {
+                        override fun read(): Int = error("bulk reads only")
+                        override fun read(buffer: ByteArray,offset: Int,length: Int): Int {
+                            opened.countDown()
+                            while(closed.count > 0) try { closed.await(50,TimeUnit.MILLISECONDS) } catch(_:InterruptedException) { }
+                            throw IOException("Source closed")
+                        }
+                        override fun close() { closed.countDown() }
+                    }
+                    Link(request,folder,true).use { link ->
+                        val source = Source(meta) {
+                            if(lateOpen) {
+                                opened.countDown()
+                                while(release.count > 0) try { release.await(50,TimeUnit.MILLISECONDS) } catch(_:InterruptedException) { }
+                            }
+                            blocking
+                        }
+                        link.sender.send(request,listOf(source),true)
+                        check(opened.await(5,TimeUnit.SECONDS)); link.sender.cancel()
+                        release.countDown()
+                        check(closed.await(5,TimeUnit.SECONDS)) { "Cancelled validation source leaked" }
+                    }
+                }
+            }
             test("receiver pause and unexpected socket loss preserve resumable bytes") {
                 for(unexpected in listOf(false,true)) {
                     val id = Manifest(Protocol.id(),listOf(meta)); val folder = File(root,"loss-$unexpected").apply { mkdirs() }
