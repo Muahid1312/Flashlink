@@ -15,7 +15,7 @@ class FakeTransferPlatform implements TransferPlatform {
   @override
   Future<Object?> invoke(String method,[Map<String,Object?>? arguments]) async {
     calls.add(method);
-    if(pending != null) await pending!.future;
+    if(pending != null) { await pending!.future; }
     return method == 'snapshot' ? current.data : null;
   }
 }

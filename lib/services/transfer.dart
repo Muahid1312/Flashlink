@@ -60,23 +60,23 @@ class TransferController extends Notifier<TransferView> {
     return const TransferView({'status':'idle','ready':false});
   }
   void _accept(TransferView next) {
-    if(_closed) return;
+    if(_closed) { return; }
     state = next;
     if(const [TransferPhase.completed,TransferPhase.failed,TransferPhase.cancelled,TransferPhase.paused,TransferPhase.interrupted,TransferPhase.connectionLost].contains(next.phase)) { ref.invalidate(historyProvider); ref.invalidate(diagnosticsProvider); }
   }
   void _error(String message) {
-    if(!_closed) state = TransferView({...state.data,'message':message});
+    if(!_closed) { state = TransferView({...state.data,'message':message}); }
   }
   Future<void> command(String method, [Map<String,Object?>? arguments]) async {
-    if(_pending || _closed) return;
-    if(method == 'send' && (state.active || !state.secure)) return;
-    if(const ['resume','retry'].contains(method) && (!state.secure || state.active)) return;
-    if(method == 'pause' && !const [TransferPhase.transferring,TransferPhase.verifying].contains(state.phase)) return;
-    if(method == 'accept' && (!state.incoming || !state.destinationChosen || state.choosingDestination || !state.secure)) return;
+    if(_pending || _closed) { return; }
+    if(method == 'send' && (state.active || !state.secure)) { return; }
+    if(const ['resume','retry'].contains(method) && (!state.secure || state.active)) { return; }
+    if(method == 'pause' && !const [TransferPhase.transferring,TransferPhase.verifying].contains(state.phase)) { return; }
+    if(method == 'accept' && (!state.incoming || !state.destinationChosen || state.choosingDestination || !state.secure)) { return; }
     _pending = true;
     try {
       final result = await ref.read(transferPlatformProvider).invoke(method,arguments);
-      if(method == 'snapshot' && result is Map) _accept(TransferView(Map<Object?,Object?>.from(result)));
+      if(method == 'snapshot' && result is Map) { _accept(TransferView(Map<Object?,Object?>.from(result))); }
     } on PlatformException catch(error) {
       if(const ['resume','retry','cancel','deleteHistory'].contains(method)) { ref.invalidate(historyProvider); ref.invalidate(diagnosticsProvider); }
       _error(error.message ?? 'Transfer operation failed.'); }

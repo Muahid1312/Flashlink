@@ -37,7 +37,7 @@ class DiagnosticsScreen extends ConsumerWidget {
             try {
               await ref.read(transferPlatformProvider).invoke('clearDiagnostics');
               ref.invalidate(diagnosticsProvider);
-            } catch(_) { if(context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Measurements could not be cleared.'))); }
+            } catch(_) { if(context.mounted) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Measurements could not be cleared.'))); } }
           }, child: const Text('Clear measurements')),
         ]),
         const Text('Up to 100 attempts stay on this device, including interruptions. No filenames, file paths, hashes, addresses or peer identities are recorded. Use the same real files and compare buffer sizes and connection modes across repeated runs; results depend on both phones, storage and radio conditions.'),

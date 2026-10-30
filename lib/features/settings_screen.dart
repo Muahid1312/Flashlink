@@ -26,14 +26,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SnackBar(content: Text('Settings could not be saved. Please try again.')));
       }
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) { setState(() => _saving = false); }
     }
   }
 
   Future<void> _editName() async {
     final name = await showDialog<String>(context: context, builder: (context) =>
       _DeviceNameDialog(initialName: ref.read(settingsProvider).deviceName));
-    if (name != null && mounted) await _save(() => ref.read(settingsProvider.notifier).setName(name));
+    if (name != null && mounted) { await _save(() => ref.read(settingsProvider.notifier).setName(name)); }
   }
 
   @override
@@ -78,7 +78,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           items: [for (final bytes in AppSettings.transferBuffers) DropdownMenuItem(value: bytes,
             child: Text(bytes == 1048576 ? '1 MiB' : '${bytes ~/ 1024} KiB', maxLines: 1, overflow: TextOverflow.ellipsis))],
           onChanged: _saving || transfer.active || transfer.ready ? null : (value) {
-            if (value != null) _save(() => ref.read(settingsProvider.notifier).setTransferBuffer(value));
+            if (value != null) { _save(() => ref.read(settingsProvider.notifier).setTransferBuffer(value)); }
           }),
         const SizedBox(height: 12),
         const Text('Applies to the next Wi-Fi Direct or local Wi-Fi session. Default: 256 KiB. Larger buffers are not guaranteed faster; measure with your phones. Security and integrity checks stay enabled.'),
@@ -124,7 +124,7 @@ class _DeviceNameDialogState extends State<_DeviceNameDialog> {
   final _formKey = GlobalKey<FormState>();
 
   void _submit() {
-    if (_formKey.currentState!.validate()) Navigator.pop(context, _controller.text.trim());
+    if (_formKey.currentState!.validate()) { Navigator.pop(context, _controller.text.trim()); }
   }
 
   @override

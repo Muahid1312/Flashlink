@@ -118,7 +118,7 @@ class ConnectionMethodPicker extends ConsumerWidget {
         items: const [
           DropdownMenuItem(value: ConnectionMethod.wifiDirect, child: Text('Wi-Fi Direct')),
           DropdownMenuItem(value: ConnectionMethod.localWifi, child: Text('Local Wi-Fi / hotspot')),
-        ], onChanged: blocked ? null : (value) { if (value != null) ref.read(connectionMethodProvider.notifier).select(value); }),
+        ], onChanged: blocked ? null : (value) { if (value != null) { ref.read(connectionMethodProvider.notifier).select(value); } }),
       const SizedBox(height: 8),
       Text(blocked ? 'Close the current session before changing methods.' : local.available
         ? 'A local Wi-Fi interface is available. Use it if Wi-Fi Direct fails; speed depends on your phones and network.'

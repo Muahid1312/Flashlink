@@ -10,7 +10,7 @@ class ConnectionMethodController extends Notifier<ConnectionMethod> {
   ConnectionMethod build() => ConnectionMethod.wifiDirect;
   void select(ConnectionMethod method) {
     final transfer = ref.read(transferProvider);
-    if (transfer.ready || transfer.active || ref.read(wifiProvider).busy) return;
+    if (transfer.ready || transfer.active || ref.read(wifiProvider).busy) { return; }
     state = method;
   }
 }

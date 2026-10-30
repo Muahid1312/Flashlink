@@ -152,7 +152,7 @@ class TransferRuntime private constructor(private val context: Context) {
                 while(SystemClock.elapsedRealtime()<until) { if(token != generation) return; Thread.sleep(100) }
             }
             try {
-                check(retired?.awaitReleased() != false) { "Previous partial file is still closing; retry shortly" }
+                check(retired?.awaitQuiescent() != false && retired?.awaitReleased() != false) { "Previous file/provider or completion receipt is still closing; retry shortly" }
                 val tls = identity.tls(approvedPeer)
                 val socket = if(owner) {
                     val activeLease = lease ?: error("Pairing session missing")
@@ -390,9 +390,17 @@ class TransferRuntime private constructor(private val context: Context) {
         work.execute { runCatching { check(token == generation); current.pause() }.onFailure { if(token == generation) update(latest + mapOf("message" to it.message)) } }
     }
     @Synchronized fun cancel(id: String? = null, delete: Boolean = false) {
-        if(id != null && latest["id"] != id) { metadata.execute { if(!ledger.cancelSaved(id,delete)) update(latest + mapOf("message" to "Some abandoned destination documents could not be removed; check the selected folder.")) }; return }
+        if(id != null && latest["id"] != id) {
+            val closing = retired
+            metadata.execute {
+                if(closing?.awaitQuiescent() == false) {
+                    update(latest + mapOf("message" to "A previous session is still committing or closing; retry saved-transfer cleanup shortly."))
+                } else if(!ledger.cancelSaved(id,delete)) update(latest + mapOf("message" to "Some abandoned destination documents could not be removed; check the selected folder."))
+            }
+            return
+        }
         generation++; stopPreparation(); destinationRequest.set(null); decision?.complete(false); runCatching { server?.close() }; runCatching { connecting?.close() }; runCatching { rawConnecting?.close() }
-        val previous = session; retired = previous; session = null
+        val previous = session ?: retired; retired = previous; session = null
         val shouldCancelJob = latest["id"] is String && latest["status"] != "completed" || preparing.get() && latest["status"] == "preparing"
         if(previous != null) Thread {
             if(shouldCancelJob) previous.cancel("Cancelled by you")
@@ -404,6 +412,12 @@ class TransferRuntime private constructor(private val context: Context) {
         update(closedState)
         val cancelledId = id ?: closedState["id"] as? String
         metadata.execute {
+            // A completion CAS may already have won before the UI saw its durable receipt.
+            // Wait for protocol workers before touching their journals or exported documents.
+            if(previous?.awaitQuiescent() == false) {
+                update(latest + mapOf("message" to "Cancellation requested. A file provider or receipt is still closing; retry saved-transfer cleanup from History after it stops."))
+                return@execute
+            }
             if(shouldCancelJob) ledger.state(closedState)
             if(shouldCancelJob || delete) cancelledId?.let { if(!ledger.cancelSaved(it,delete)) update(latest + mapOf("message" to "Some abandoned destination documents could not be removed; check the selected folder.")) }
         }

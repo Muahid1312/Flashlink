@@ -121,7 +121,7 @@ class TransferQueue extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(transferProvider);
     final files = state.data['files'] as List? ?? const [];
-    if(files.isEmpty) return const SizedBox.shrink();
+    if(files.isEmpty) { return const SizedBox.shrink(); }
     final index = (state.data['currentFileIndex'] as num?)?.toInt();
     return Panel(child: ExpansionTile(tilePadding: EdgeInsets.zero,
       title: Text('File queue · ${state.completed} / ${files.length} verified'),

@@ -150,6 +150,27 @@ object ProtocolIntegration {
                 check(senderEvents.none { it["status"] == "completed" })
             } finally { sender.close(); receiver.close() }
         }
+        test("cancellation cleanup waits for a completion callback that already won") {
+            val server = ServerSocket(0,1,InetAddress.getLoopbackAddress())
+            val client = Socket(InetAddress.getLoopbackAddress(),server.localPort); val accepted = server.accept(); server.close()
+            val ready = CountDownLatch(2); val offer = CountDownLatch(1); val committing = CountDownLatch(1); val commit = CountDownLatch(1)
+            val sender = TransferSession(client,"Sender",{Store()},{},{ok,_ -> if(ok) ready.countDown()})
+            val receiver = TransferSession(accepted,"Receiver",{Store()},{ event ->
+                if(event["status"] == "waitingForApproval") offer.countDown()
+                if(event["status"] == "completed") {
+                    committing.countDown()
+                    while(commit.count > 0) try { commit.await(50,TimeUnit.MILLISECONDS) } catch(_:InterruptedException) { }
+                }
+            },{ok,_ -> if(ok) ready.countDown()})
+            try {
+                sender.start(); receiver.start(); check(ready.await(5,TimeUnit.SECONDS))
+                val sources = sources(listOf(65537)); sender.send(Manifest(Protocol.id(),sources.map { it.meta }),sources)
+                check(offer.await(5,TimeUnit.SECONDS)); receiver.accept(); check(committing.await(5,TimeUnit.SECONDS))
+                receiver.cancel()
+                check(!receiver.awaitQuiescent(100)) { "Cleanup must not race an in-flight durable receipt" }
+                commit.countDown(); check(receiver.awaitQuiescent())
+            } finally { commit.countDown(); sender.close(); receiver.close() }
+        }
         test("receiver rejection sends no bytes and cannot restart same job") {
             Pairing().use { pair ->
                 val sources = sources(listOf(1000000)); pair.a.send(Manifest(Protocol.id(),sources.map { it.meta }),sources)

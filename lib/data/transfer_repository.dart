@@ -54,7 +54,7 @@ class SqliteTransferRepository implements TransferRepository {
   Future<void> close() async {
     final pending = _database;
     _database = null;
-    if(pending != null) await (await pending).close();
+    if(pending != null) { await (await pending).close(); }
   }
 
   @override

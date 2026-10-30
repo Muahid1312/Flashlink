@@ -37,7 +37,7 @@ class WifiSnapshot {
     WifiPhase.connected => 'Wi-Fi Direct connected', WifiPhase.disconnecting => 'Disconnecting', WifiPhase.failed => 'Connection needs attention',
   };
   List<String> get connectedNames {
-    if (!connected) return const [];
+    if (!connected) { return const []; }
     if (group!['isGroupOwner'] == true) {
       final clients = group!['clients'] as List? ?? const [];
       return clients.map((item) => (item as Map)['name'] as String? ?? 'Unnamed Android device').toList();
@@ -89,7 +89,7 @@ class WifiController extends Notifier<WifiSnapshot> {
     return const WifiSnapshot(phase: WifiPhase.permissionRequired, message: 'Checking Wi-Fi Direct availability…');
   }
   void _accept(WifiSnapshot next) {
-    if (!_closed && next.revision >= state.revision) state = next;
+    if (!_closed && next.revision >= state.revision) { state = next; }
   }
   void _error(String message) {
     if (!_closed) {
@@ -102,9 +102,9 @@ class WifiController extends Notifier<WifiSnapshot> {
     catch (_) { _error('Could not read Android Wi-Fi Direct state. Refresh on an Android device.'); }
   }
   Future<void> command(String method, [Map<String, Object?>? arguments]) async {
-    if (_closed || _commandPending) return;
-    if (method == 'connect' && (state.busy || state.connected)) return;
-    if (method == 'startDiscovery' && (state.busy || state.connected || state.phase == WifiPhase.discovering)) return;
+    if (_closed || _commandPending) { return; }
+    if (method == 'connect' && (state.busy || state.connected)) { return; }
+    if (method == 'startDiscovery' && (state.busy || state.connected || state.phase == WifiPhase.discovering)) { return; }
     _commandPending = true;
     try {
       await ref.read(wifiPlatformProvider).invoke(method, arguments);
@@ -112,7 +112,7 @@ class WifiController extends Notifier<WifiSnapshot> {
     } on PlatformException catch (error) {
       // Native events contain prerequisite/failure states; do not overwrite them.
       await refresh();
-      if (state.phase == WifiPhase.idle) _error(error.message ?? 'Android could not complete the request.');
+      if (state.phase == WifiPhase.idle) { _error(error.message ?? 'Android could not complete the request.'); }
     } catch (_) { _error('Wi-Fi Direct operation unavailable. Refresh and retry.'); }
     finally { _commandPending = false; }
   }

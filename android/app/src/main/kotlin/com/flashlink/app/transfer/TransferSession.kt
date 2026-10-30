@@ -51,6 +51,12 @@ class TransferSession(
     private val released = CountDownLatch(1)
     private val heartbeatPending = AtomicBoolean(false)
     fun awaitReleased(): Boolean = released.await(3,TimeUnit.SECONDS)
+    /** A close signal alone is insufficient: a terminal receipt may still be committing. */
+    fun awaitQuiescent(timeoutMillis: Long = 3000): Boolean {
+        val deadline = System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        fun remaining() = (deadline-System.nanoTime()).coerceAtLeast(0)
+        return reader.awaitTermination(remaining(),TimeUnit.NANOSECONDS) && writer.awaitTermination(remaining(),TimeUnit.NANOSECONDS)
+    }
     private val active = AtomicReference<Job?>(null)
     private val seen = LinkedHashSet<String>()
     @Volatile private var ready = false

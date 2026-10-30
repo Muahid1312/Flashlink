@@ -99,7 +99,7 @@ class SendScreen extends ConsumerWidget {
         const SizedBox(height: 18),
         FilledButton.icon(onPressed: selected.isLoading || ref.watch(transferProvider).active ? null : () async {
           final error = await ref.read(selectionProvider.notifier).pick();
-          if (context.mounted && error != null) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error)));
+          if (context.mounted && error != null) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error))); }
         }, icon: const Icon(Icons.add_rounded), label: Text(selected.isLoading ? 'Opening picker…' : 'Choose files')),
         const SizedBox(height: 10),
         const Text('Photos, videos, documents & more', textAlign: TextAlign.center),
@@ -119,7 +119,7 @@ class SendScreen extends ConsumerWidget {
       const TransferControls(),
       const SizedBox(height:12),
       FilledButton(onPressed:files.isEmpty || !ref.watch(transferProvider).secure || ref.watch(transferProvider).active ? null :
-        () async { await ref.read(transferProvider.notifier).send(files); if(context.mounted) context.push('/transfer'); },child:const Text('Request file transfer')),
+        () async { await ref.read(transferProvider.notifier).send(files); if(context.mounted) { context.push('/transfer'); } },child:const Text('Request file transfer')),
       TextButton(onPressed: () => context.push('/transfer'), child: const Text('View transfer screen')),
       const PhaseNotice(message: 'The authenticated receiver must approve the exact manifest before file bytes are sent. Pause retains private checkpoints.'),
     ])));
@@ -173,7 +173,7 @@ class HistoryContent extends ConsumerWidget {
       TextButton(onPressed: () => ref.invalidate(historyProvider), child: const Text('Retry')),
     ])),
     data: (records) {
-      if (records.isEmpty) return const EmptyPanel(icon: Icons.history_rounded, title: 'A fresh start', message: 'No transfers yet. Actual transfer outcomes will live here.');
+      if (records.isEmpty) { return const EmptyPanel(icon: Icons.history_rounded, title: 'A fresh start', message: 'No transfers yet. Actual transfer outcomes will live here.'); }
       final visible = compact ? records.take(3) : records;
       return Panel(child: Column(children: [for (final record in visible)
         ListTile(contentPadding: EdgeInsets.zero,

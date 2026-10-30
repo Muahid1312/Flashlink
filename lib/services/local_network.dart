@@ -41,15 +41,15 @@ class LocalController extends Notifier<LocalSnapshot> {
     return const LocalSnapshot({});
   }
   void _accept(LocalSnapshot next) {
-    if (!_closed && next.revision >= state.revision) state = next;
+    if (!_closed && next.revision >= state.revision) { state = next; }
   }
-  void _error(String text) { if (!_closed) state = LocalSnapshot({...state.data, 'message': text}); }
+  void _error(String text) { if (!_closed) { state = LocalSnapshot({...state.data, 'message': text}); } }
   Future<void> command(String method, [Map<String, Object?>? arguments]) async {
-    if (_pending || _closed) return;
+    if (_pending || _closed) { return; }
     _pending = true;
     try {
       final result = await ref.read(localPlatformProvider).invoke(method, arguments);
-      if (method == 'snapshot' && result is Map) _accept(LocalSnapshot(Map<Object?, Object?>.from(result)));
+      if (method == 'snapshot' && result is Map) { _accept(LocalSnapshot(Map<Object?, Object?>.from(result))); }
     } on PlatformException catch (e) { _error(e.message ?? 'Local connection failed. Check Wi-Fi and retry.'); }
     catch (_) { _error('Local networking is unavailable. Retry on Android.'); }
     finally { _pending = false; }

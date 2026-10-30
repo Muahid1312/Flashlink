@@ -20,7 +20,7 @@ class FakeLocalPlatform implements LocalPlatform {
   @override
   Future<Object?> invoke(String method, [Map<String, Object?>? arguments]) async {
     calls.add(method);
-    if (fail) throw PlatformException(code: 'LOCAL_NETWORK', message: 'Guest Wi-Fi may isolate clients. Use the same hotspot.');
+    if (fail) { throw PlatformException(code: 'LOCAL_NETWORK', message: 'Guest Wi-Fi may isolate clients. Use the same hotspot.'); }
     return method == 'snapshot' ? current.data : null;
   }
 }

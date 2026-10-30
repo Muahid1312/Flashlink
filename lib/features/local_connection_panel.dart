@@ -29,7 +29,7 @@ class _LocalConnectionPanelState extends ConsumerState<LocalConnectionPanel> {
     try {
       invitation = discovered?['uri'] as String? ?? _link.text.trim();
       fingerprint = manual ? _pin.text.trim().replaceAll(RegExp(r'[:\s]'), '').toLowerCase() : Uri.parse(invitation).queryParameters['pin'];
-      if (fingerprint == null || !RegExp(r'^[0-9a-f]{64}$').hasMatch(fingerprint)) throw const FormatException();
+      if (fingerprint == null || !RegExp(r'^[0-9a-f]{64}$').hasMatch(fingerprint)) { throw const FormatException(); }
     } catch (_) { setState(() => _error = 'Paste a complete FlashLink invitation or enter all manual pairing fields.'); return; }
     final accepted = await showDialog<bool>(context: context, builder: (context) => AlertDialog(
       title: const Text('Confirm the other phone'),
@@ -40,7 +40,7 @@ class _LocalConnectionPanelState extends ConsumerState<LocalConnectionPanel> {
       actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Reject')),
         FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Matches · connect'))],
     ));
-    if (accepted != true || !mounted) return;
+    if (accepted != true || !mounted) { return; }
     setState(() { _pending = true; _error = null; });
     try {
       await ref.read(transferPlatformProvider).invoke('approvePairing', {'fingerprint': fingerprint});
@@ -50,8 +50,8 @@ class _LocalConnectionPanelState extends ConsumerState<LocalConnectionPanel> {
         arguments.addAll({'host': _host.text.trim(), 'port': int.parse(_port.text), 'id': _session.text.trim(), 'fingerprint': fingerprint});
       } else { arguments['invitation'] = invitation; }
       await ref.read(localProvider.notifier).command(manual ? 'connectManual' : 'connect', arguments);
-    } catch (_) { if (mounted) setState(() => _error = 'Could not approve this peer. Close the current session and retry.'); }
-    finally { if (mounted) setState(() => _pending = false); }
+    } catch (_) { if (mounted) { setState(() => _error = 'Could not approve this peer. Close the current session and retry.'); } }
+    finally { if (mounted) { setState(() => _pending = false); } }
   }
   @override
   Widget build(BuildContext context) {

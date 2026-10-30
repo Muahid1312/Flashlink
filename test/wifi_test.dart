@@ -22,8 +22,8 @@ class FakeWifiPlatform implements WifiPlatform {
   @override
   Future<void> invoke(String method, [Map<String, Object?>? arguments]) async {
     calls.add(method);
-    if (deny) throw PlatformException(code: 'NOT_READY');
-    if (pending != null) await pending!.future;
+    if (deny) { throw PlatformException(code: 'NOT_READY'); }
+    if (pending != null) { await pending!.future; }
     switch (method) {
       case 'requestPermission': emit(WifiPhase.idle);
       case 'startDiscovery': emit(WifiPhase.discovering);
@@ -115,7 +115,7 @@ void main() {
   test('MethodChannel maps a real native envelope without assuming owner IP', () async {
     const channel = MethodChannel('app.flashlink/wifi.v1');
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
-      if (call.method == 'snapshot') return {'phase': 'idle', 'revision': 7, 'peers': []};
+      if (call.method == 'snapshot') { return {'phase': 'idle', 'revision': 7, 'peers': []}; }
       expect(call.method, 'connect'); expect(call.arguments, {'address': 'test'}); return null;
     });
     addTearDown(() => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));

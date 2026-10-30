@@ -22,8 +22,8 @@ class _PairingPanelState extends ConsumerState<PairingPanel> {
     try {
       await ref.read(transferPlatformProvider).invoke('approvePairing',{'fingerprint':normalized});
       ref.invalidate(pairingProvider);
-    } catch (_) { if(mounted) setState(() => _error = 'Pairing approval failed. Close the current session and retry.'); }
-    finally { if(mounted) setState(() => _saving = false); }
+    } catch (_) { if(mounted) { setState(() => _error = 'Pairing approval failed. Close the current session and retry.'); } }
+    finally { if(mounted) { setState(() => _saving = false); } }
   }
   @override
   Widget build(BuildContext context) {

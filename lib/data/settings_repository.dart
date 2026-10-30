@@ -11,7 +11,7 @@ class SettingsRepository {
   AppSettings read() {
     try {
       final encoded = preferences.getString(_key);
-      if (encoded == null) return const AppSettings();
+      if (encoded == null) { return const AppSettings(); }
       final data = jsonDecode(encoded) as Map<String, dynamic>;
       final theme = ThemeMode.values.where((mode) => mode.name == data['theme']).firstOrNull ?? ThemeMode.system;
       final name = data['deviceName'];
@@ -30,6 +30,6 @@ class SettingsRepository {
     final saved = await preferences.setString(_key, jsonEncode({
       'theme': settings.theme.name, 'deviceName': settings.deviceName, 'transferBufferBytes': settings.transferBufferBytes,
     }));
-    if (!saved) throw StateError('Could not save settings');
+    if (!saved) { throw StateError('Could not save settings'); }
   }
 }

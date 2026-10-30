@@ -17,7 +17,7 @@ class SettingsController extends Notifier<AppSettings> {
 
   Future<void> setTheme(ThemeMode theme) => _enqueue(() => state.copyWith(theme: theme));
   Future<void> setTransferBuffer(int bytes) {
-    if (!AppSettings.transferBuffers.contains(bytes)) throw ArgumentError('Choose a supported transfer buffer size.');
+    if (!AppSettings.transferBuffers.contains(bytes)) { throw ArgumentError('Choose a supported transfer buffer size.'); }
     return _enqueue(() => state.copyWith(transferBufferBytes: bytes));
   }
   Future<void> setName(String name) {
@@ -52,7 +52,7 @@ class FileSelectionController extends Notifier<AsyncValue<List<SharedFile>>> {
   AsyncValue<List<SharedFile>> build() => const AsyncData([]);
 
   Future<String?> pick() async {
-    if (state.isLoading) return null;
+    if (state.isLoading) { return null; }
     final previous = state.asData?.value ?? <SharedFile>[];
     state = const AsyncLoading();
     try {
