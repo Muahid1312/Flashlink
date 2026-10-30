@@ -41,6 +41,10 @@ class ApkMetadataTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify(self.fixture().replace("uses-permission: name='android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE'", ''), 'preview', '0.1.0', '2')
 
+    def test_android_build_tools_36_badging_field_names(self):
+        badging = self.fixture().replace("sdkVersion:'24'", "minSdkVersion:'24'").replace("application-label:'FlashLink'", "application: label='FlashLink' icon=''")
+        verify(badging, 'preview', '0.1.0', '2')
+
 
 if __name__ == '__main__':
     unittest.main()

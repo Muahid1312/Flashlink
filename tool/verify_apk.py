@@ -13,10 +13,12 @@ def verify(badging, mode, version, code):
     expected_version = version + ('-preview' if mode == 'preview' else '')
     if not package or package.groups() != (expected_id, code, expected_version):
         raise ValueError('Unexpected application ID or version metadata')
-    if "application-label:'FlashLink'" not in badging:
+    if "application-label:'FlashLink'" not in badging and "application: label='FlashLink'" not in badging:
         raise ValueError('Application label must be FlashLink')
-    if "sdkVersion:'24'" not in badging or "targetSdkVersion:'36'" not in badging:
-        raise ValueError('Unexpected minimum/target Android SDK; review compatibility before changing this gate')
+    minimum = re.search(r"^(?:minSdkVersion|sdkVersion):'([0-9]+)'", badging, re.M)
+    target = re.search(r"^targetSdkVersion:'([0-9]+)'", badging, re.M)
+    if not minimum or minimum[1] != '24' or not target or target[1] != '36':
+        raise ValueError(f'Unexpected manifest SDKs: minimum={minimum[1] if minimum else None}, target={target[1] if target else None}; review compatibility before changing this gate')
     debuggable = 'application-debuggable' in badging
     if debuggable != (mode == 'debug'):
         raise ValueError('APK debuggable state does not match its requested build mode')

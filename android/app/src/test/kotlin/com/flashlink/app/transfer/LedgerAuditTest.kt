@@ -127,6 +127,20 @@ class LedgerAuditTest {
         ledger.approve(manifest.id); ledger.state(event(manifest,"paused"))
         ledger.cancelSaved(manifest.id,true)
         assertTrue(ledger.seen(manifest.id)); assertNull(ledger.load(manifest.id)); assertTrue(ledger.histories().isEmpty())
+        ledger.readableDatabase.rawQuery("SELECT manifest,peer,sources,destination FROM resume_jobs WHERE id=?",arrayOf(manifest.id)).use { c ->
+            assertTrue(c.moveToFirst()); assertEquals(0,c.getBlob(0).size); assertEquals("",c.getString(1)); assertEquals("[]",c.getString(2)); assertTrue(c.isNull(3))
+        }
+    }
+    @Test fun existingDeletedHistoryMetadataIsScrubbedWhenReopened() {
+        val manifest = manifest(); ledger.create(manifest,"b".repeat(64),false,destination="content://private/tree/folder")
+        ledger.writableDatabase.execSQL("UPDATE resume_jobs SET deleted=1 WHERE id=?",arrayOf(manifest.id))
+        ledger.writableDatabase.execSQL("INSERT INTO resume_files(job,id,export_uri) VALUES(?,?,?)",arrayOf(manifest.id,manifest.files.single().id,"content://private/document/file"))
+        ledger.close(); ledger = TransferLedger(context)
+        assertTrue(ledger.seen(manifest.id)); assertNull(ledger.load(manifest.id))
+        ledger.readableDatabase.rawQuery("SELECT manifest,peer,destination FROM resume_jobs WHERE id=?",arrayOf(manifest.id)).use { c ->
+            assertTrue(c.moveToFirst()); assertEquals(0,c.getBlob(0).size); assertEquals("",c.getString(1)); assertTrue(c.isNull(2))
+        }
+        ledger.readableDatabase.rawQuery("SELECT COUNT(*) FROM resume_files WHERE job=?",arrayOf(manifest.id)).use { c -> assertTrue(c.moveToFirst()); assertEquals(0,c.getInt(0)) }
     }
     @Test fun resumeRequiresExactManifestAndApprovedPeer() {
         val manifest = manifest(); val pin = "c".repeat(64)

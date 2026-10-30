@@ -30,6 +30,7 @@ class TransferLedger(val context: Context) : SQLiteOpenHelper(context,"flashlink
         super.onOpen(db)
         db.execSQL("PRAGMA synchronous=FULL")
         onUpgrade(db,3,3)
+        scrubDeletedMetadata(db)
         db.execSQL("UPDATE resume_jobs SET status='interrupted' WHERE status IN ('preparing','transferring','verifying','finalizing','waitingForApproval','reconnecting')")
         db.execSQL("UPDATE transfer_sessions SET status='interrupted',verified=0 WHERE status IN ('preparing','transferring','verifying','finalizing','waitingForApproval','reconnecting')")
         db.rawQuery("SELECT id FROM resume_jobs WHERE status='cancelled' OR deleted=1",null).use { c ->
@@ -37,6 +38,12 @@ class TransferLedger(val context: Context) : SQLiteOpenHelper(context,"flashlink
         }
     }
     data class Saved(val manifest: Manifest, val peer: String, val outgoing: Boolean, val sources: List<String>, val destination: String?, val approved: Boolean, val status: String)
+    private fun scrubDeletedMetadata(db: SQLiteDatabase) {
+        // Keep only replay tombstones after an explicit history deletion, including old installs.
+        db.execSQL("DELETE FROM resume_chunks WHERE job IN (SELECT id FROM resume_jobs WHERE deleted=1)")
+        db.execSQL("DELETE FROM resume_files WHERE job IN (SELECT id FROM resume_jobs WHERE deleted=1)")
+        db.execSQL("UPDATE resume_jobs SET manifest=X'',peer='',direction='',sources='[]',destination=NULL,approved=0 WHERE deleted=1 AND length(manifest)>0")
+    }
     /** Bounded local diagnostics: explicit allowlist prevents accidental metadata disclosure. */
     @Synchronized fun recordPerformance(event: Map<String,Any?>, method: String) {
         val id = event["diagnosticId"] as? String ?: return
@@ -222,6 +229,7 @@ class TransferLedger(val context: Context) : SQLiteOpenHelper(context,"flashlink
                 // Keep a UUID tombstone, and never remove completed destination documents.
                 db.execSQL("UPDATE resume_jobs SET status='cancelled',sources='[]',destination=NULL,approved=0,deleted=? WHERE id=?",arrayOf<Any?>(if(delete) 1 else 0,id))
                 db.execSQL(if(delete) "DELETE FROM transfer_sessions WHERE id=?" else "UPDATE transfer_sessions SET status='cancelled',verified=0 WHERE id=?",arrayOf<Any?>(id))
+                if(delete) scrubDeletedMetadata(db)
                 db.setTransactionSuccessful()
             } finally { db.endTransaction() }
             saved to exports
